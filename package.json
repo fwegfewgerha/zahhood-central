@@ -4,11 +4,15 @@
   "private": true,
   "description": "Zah Hood Central - staff panel, player database, ban system and live stats for the Zah Hood Roblox experience.",
   "type": "module",
-  "engines": { "node": ">=22.5.0" },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "seed": "node scripts/seed.js"
+    "seed": "node scripts/dev-seed.js",
+    "backup": "node scripts/backup.js",
+    "test": "node scripts/smoke-test.js"
   },
   "dependencies": {
     "express": "^4.21.2",

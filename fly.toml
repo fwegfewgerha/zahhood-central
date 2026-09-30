@@ -1,0 +1,42 @@
+# Zah Hood Central - Fly.io deployment
+#
+# Secrets (Discord credentials, session secret, owner IDs) are NOT in this
+# file. They are set with `fly secrets set`, which stores them encrypted.
+# Everything here is safe to commit.
+
+app = "zahhood"
+primary_region = "iad"
+
+[build]
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  TRUST_PROXY = "1"
+  DB_PATH = "/data/zahhood.db"
+  SERVER_TIMEOUT_SECONDS = "90"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # The game heartbeats every 15s and staff need the panel reachable, so the
+  # machine stays up rather than cold-starting. One machine only: the database
+  # is a file on one volume, and a second machine would get its own copy.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[mounts]
+  source = "zahhood_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

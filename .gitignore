@@ -1,7 +1,8 @@
-node_modules/
+*.log
+.env
 data/*.db
 data/*.db-journal
-data/*.db-wal
 data/*.db-shm
-.env
-*.log
+data/*.db-wal
+data/backups/
+node_modules/
