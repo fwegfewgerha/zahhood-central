@@ -503,6 +503,31 @@ console.log('\nGin and website traffic');
   await panel('/permissions', null, 'DELETE');
 }
 
+// --- 15. the configured owner can always get in ------------------------------
+// Regression guard: the whitelist bypass once checked only OWNER_DISCORD_ID,
+// so configuring GIN_DISCORD_ID alone locked the site's own owner out.
+console.log('\nOwner lockout guard');
+{
+  const { entitledRole } = await import('../src/auth.js');
+  const { ginId, ownerId } = config.discord;
+
+  if (ginId) {
+    check('the configured Gin resolves to the gin rank', entitledRole(ginId) === 'gin');
+    check('the configured Gin bypasses an empty whitelist', !!entitledRole(ginId));
+  }
+  if (ownerId && ownerId !== ginId) {
+    check('the configured owner resolves to game_owner', entitledRole(ownerId) === 'game_owner');
+  }
+  check('a stranger is entitled to nothing', entitledRole('999999999999999999') === null);
+  check('an empty id is entitled to nothing', entitledRole('') === null && entitledRole(null) === null);
+  check('at least one protected account is configured', !!(ginId || ownerId));
+
+  // Gin must win when both variables name the same account.
+  if (ginId && ownerId && ginId === ownerId) {
+    check('Gin takes precedence when both IDs match', entitledRole(ginId) === 'gin');
+  }
+}
+
 // --- cleanup --------------------------------------------------------------
 db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
 db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();

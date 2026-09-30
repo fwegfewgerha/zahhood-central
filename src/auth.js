@@ -281,6 +281,25 @@ export async function discordGet(pathname, accessToken) {
 }
 
 /**
+ * The rank the environment file grants this Discord ID, or null.
+ *
+ * The two protected ranks are granted by ONE thing only: an exact match on an
+ * ID in the server's .env. There is no "first account wins" fallback, and the
+ * panel API refuses to assign either of them, so the only way to hold one is
+ * to have access to that file. Gin outranks Game Owner and wins if both match.
+ *
+ * This is the single source of truth for that question. Anything that needs to
+ * know "is this the site's owner?" - including the whitelist bypass, which must
+ * never lock the configured owner out of their own site - asks here.
+ */
+export function entitledRole(discordId) {
+  if (!discordId) return null;
+  if (config.discord.ginId && config.discord.ginId === discordId) return 'gin';
+  if (config.discord.ownerId && config.discord.ownerId === discordId) return 'game_owner';
+  return null;
+}
+
+/**
  * Create or refresh the local account for a Discord user.
  * The configured OWNER_DISCORD_ID is promoted to game_owner automatically,
  * and the very first account ever created is promoted too so the panel is
@@ -304,17 +323,8 @@ export function upsertUser(profile, req) {
 
   let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(profile.id);
 
-  // The two top ranks are granted by ONE thing only: an exact match on an ID
-  // in the server's environment file. There is no "first account wins"
-  // fallback, and the panel API refuses to assign either of them, so the only
-  // way to hold one is to have access to the server's .env.
-  //
-  // Gin (the website owner) outranks Game Owner, and wins if both match.
-  const isGin = !!config.discord.ginId && config.discord.ginId === profile.id;
-  const isConfiguredOwner =
-    !isGin && !!config.discord.ownerId && config.discord.ownerId === profile.id;
-
-  const entitled = isGin ? 'gin' : isConfiguredOwner ? 'game_owner' : null;
+  const entitled = entitledRole(profile.id);
+  const isGin = entitled === 'gin';
 
   if (entitled && user.role !== entitled) {
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run(entitled, user.id);

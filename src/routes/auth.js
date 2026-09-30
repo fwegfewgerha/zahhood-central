@@ -10,6 +10,7 @@ import {
   upsertUser,
   createSession,
   destroySession,
+  entitledRole,
   clientIp,
   requireLogin,
 } from '../auth.js';
@@ -49,7 +50,9 @@ authRouter.get('/discord/callback', async (req, res) => {
     const profile = await discordGet('/users/@me', token.access_token);
 
     const ip = clientIp(req);
-    const isOwner = !!config.discord.ownerId && config.discord.ownerId === profile.id;
+    // Whoever the environment file names - Gin or Game Owner - always gets
+    // through the whitelist, so an empty list can never lock them out.
+    const isOwner = !!entitledRole(profile.id);
 
     // Gate 1: the whitelist. The configured owner is always allowed through
     // so an empty list can never lock the site's own owner out.
