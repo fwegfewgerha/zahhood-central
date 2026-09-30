@@ -1,0 +1,29 @@
+# Litestream replication for Zah Hood Central.
+#
+# Litestream watches the SQLite file and streams every change to object
+# storage. On a host with an ephemeral disk (Render's free tier), the
+# entrypoint restores the latest copy on boot, so a wiped disk costs nothing.
+#
+# Values come from the environment so nothing secret lives in this file.
+#   REPLICA_URL                  s3://bucket/path?endpoint=...&region=...
+#   LITESTREAM_ACCESS_KEY_ID     storage access key
+#   LITESTREAM_SECRET_ACCESS_KEY storage secret
+#   DB_PATH                      where the database lives in the container
+
+access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+
+dbs:
+  - path: ${DB_PATH}
+    replica:
+      url: ${REPLICA_URL}
+
+# Keep a full snapshot daily and hold them for a week, so you can roll back to
+# a point in time rather than only to "the latest".
+snapshot:
+  interval: 24h
+  retention: 168h
+
+logging:
+  level: info
+  type: text

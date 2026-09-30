@@ -1,0 +1,50 @@
+# Render blueprint for Zah Hood Central.
+#
+# Render's free plan has no persistent disk, so the SQLite file is wiped on
+# every restart, deploy and idle spin-down. Litestream replicates it to object
+# storage and restores it on boot, which is what makes this survive.
+#
+# Values marked `sync: false` are set in the Render dashboard, not here, so no
+# secret ever lands in the repository.
+
+services:
+  - type: web
+    name: zahhood-central
+    runtime: docker
+    plan: free
+    region: oregon
+    healthCheckPath: /healthz
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "1"
+      - key: DB_PATH
+        value: /data/zahhood.db
+
+      # --- your site ---
+      - key: BASE_URL
+        sync: false
+      - key: DISCORD_REDIRECT_URI
+        sync: false
+
+      # --- secrets ---
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DISCORD_CLIENT_ID
+        sync: false
+      - key: DISCORD_CLIENT_SECRET
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: GIN_DISCORD_ID
+        sync: false
+
+      # --- litestream replication ---
+      - key: REPLICA_URL
+        sync: false
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false
