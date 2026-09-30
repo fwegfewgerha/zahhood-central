@@ -191,6 +191,12 @@ function shell() {
     el(
       'header',
       { class: 'topbar' },
+      el('button', {
+        class: 'menu-btn',
+        id: 'menu-btn',
+        title: 'Menu',
+        onclick: () => document.querySelector('.app')?.classList.toggle('nav-open'),
+      }, '≡'),
       el('h2', { id: 'page-title' }, 'Dashboard'),
       el('div', { class: 'spacer' }),
       el(
@@ -203,7 +209,12 @@ function shell() {
     el('div', { class: 'view', id: 'view' })
   );
 
-  return el('div', { class: 'app' }, sidebar, main);
+  const backdrop = el('div', {
+    class: 'nav-backdrop',
+    onclick: () => app.classList.remove('nav-open'),
+  });
+  const app = el('div', { class: 'app' }, sidebar, backdrop, main);
+  return app;
 }
 
 function refreshBadges() {
@@ -229,6 +240,8 @@ async function route() {
   }
 
   document.getElementById('page-title').textContent = def.title;
+  // A phone shows the nav as a drawer; picking a page should close it.
+  document.querySelector('.app')?.classList.remove('nav-open');
   reportRoute();
   const view = document.getElementById('view');
   view.className = `view${def.flush ? ' flush' : ''}`;

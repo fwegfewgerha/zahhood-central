@@ -162,11 +162,22 @@ export async function chatmodView(view) {
       accept: 'image/png,image/jpeg,image/gif,image/webp',
       style: { display: 'none' },
     });
+    // Paste and drag-drop do not exist on a phone, so the button is the
+    // primary way in and the shortcuts are mentioned only where they work.
+    const touchOnly = !window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+    const uploadBtn = el('button', {
+      class: 'btn primary shot-upload',
+      type: 'button',
+      onclick: (e) => { e.preventDefault(); fileInput.click(); },
+    }, 'Upload screenshot');
+
     const drop = el('div', { class: 'shot-drop' },
-      el('div', { style: { fontSize: '13px', fontWeight: 600, marginBottom: '4px' } }, 'Screenshot required'),
-      el('div', { class: 'muted', style: { fontSize: '12px' } },
-        'Paste with Ctrl+V, drop an image here, or ',
-        el('a', { href: '#', onclick: (e) => { e.preventDefault(); fileInput.click(); } }, 'choose a file')));
+      el('div', { style: { fontSize: '13px', fontWeight: 600, marginBottom: '10px' } }, 'Screenshot required'),
+      uploadBtn,
+      el('div', { class: 'muted', style: { fontSize: '12px', marginTop: '9px' } },
+        touchOnly
+          ? 'Pick the screenshot from your photos or files.'
+          : 'or paste with Ctrl+V, or drop an image here'));
 
     const refreshMuteButton = () => {
       if (!muteBtn) return;
