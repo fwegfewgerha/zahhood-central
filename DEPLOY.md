@@ -104,8 +104,8 @@ git push -u origin master
 | `DISCORD_REDIRECT_URI` | `https://zahhood.is-a.dev/auth/discord/callback` |
 | `DISCORD_CLIENT_ID` | from your `.env` |
 | `DISCORD_CLIENT_SECRET` | from your `.env` |
-| `DISCORD_GUILD_ID` | `1521776473365807184` |
-| `GIN_DISCORD_ID` | `504285424462856192` |
+| `DISCORD_GUILD_ID` | `YOUR_DISCORD_SERVER_ID` |
+| `GIN_DISCORD_ID` | `YOUR_DISCORD_USER_ID` |
 | `REPLICA_URL` | the `s3://...` line from step 2 |
 | `LITESTREAM_ACCESS_KEY_ID` | Supabase access key |
 | `LITESTREAM_SECRET_ACCESS_KEY` | Supabase secret |
