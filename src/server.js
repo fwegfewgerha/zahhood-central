@@ -55,7 +55,32 @@ app.get('/healthz', (req, res) => res.json({ ok: true, name: SITE.name, t: Date.
 
 // ---- pages ----
 const pub = path.join(ROOT, 'public');
-app.use(express.static(pub, { index: false, maxAge: config.isProd ? '1h' : 0 }));
+/**
+ * Static files.
+ *
+ * The panel's HTML, JavaScript and CSS are served `no-cache`, which does not
+ * mean "do not cache" - it means "always ask me first". The browser keeps its
+ * copy and revalidates with an ETag, so an unchanged file costs a 304 and no
+ * body, while a deploy is picked up immediately.
+ *
+ * A long max-age here would leave everybody on stale code for an hour after
+ * every deploy, which is exactly the sort of thing that looks like a bug.
+ * Images and fonts, which get new names rather than new contents, may cache.
+ */
+app.use(
+  express.static(pub, {
+    index: false,
+    etag: true,
+    lastModified: true,
+    setHeaders(res, filePath) {
+      if (/\.(html|js|css)$/i.test(filePath)) {
+        res.setHeader('Cache-Control', 'no-cache');
+      } else {
+        res.setHeader('Cache-Control', config.isProd ? 'public, max-age=604800' : 'no-cache');
+      }
+    },
+  })
+);
 
 app.get('/', (req, res) => {
   if (req.user && !req.user.suspended && isStaff(req.user.role)) return res.redirect('/panel');
