@@ -36,12 +36,13 @@ if (!owner) {
 }
 const sid = crypto.randomBytes(32).toString('base64url');
 db.prepare(
-  'INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)'
-).run(sid, owner.id, Date.now(), Date.now() + 3600_000, '127.0.0.1', 'smoke-test');
+  'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+).run(sid, owner.id, Date.now(), Date.now() + 3600_000, Date.now(), 'smoke-test');
 const cookie = `zhc_sid=${sid}.${crypto.createHmac('sha256', config.sessionSecret).update(sid).digest('base64url')}`;
 
 const gameHeaders = { 'Content-Type': 'application/json', 'X-ZHC-Key': key };
-const panelHeaders = { 'Content-Type': 'application/json', Cookie: cookie };
+// Cookie-authed writes must carry a same-site Origin, so the harness sends one.
+const panelHeaders = { 'Content-Type': 'application/json', Cookie: cookie, Origin: BASE };
 
 const game = (path, body, method = 'POST') =>
   fetch(`${BASE}/api/game${path}`, { method, headers: gameHeaders, body: body ? JSON.stringify(body) : undefined })
@@ -162,13 +163,13 @@ console.log('\nRole and rank enforcement');
   } else {
     const lowSid = crypto.randomBytes(32).toString('base64url');
     db.prepare(
-      'INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(lowSid, chatMod.id, Date.now(), Date.now() + 3600_000, '127.0.0.1', 'smoke-test');
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(lowSid, chatMod.id, Date.now(), Date.now() + 3600_000, Date.now(), 'smoke-test');
     const lowCookie = `zhc_sid=${lowSid}.${crypto.createHmac('sha256', config.sessionSecret).update(lowSid).digest('base64url')}`;
     const asLow = (path, body, method = 'GET') =>
       fetch(`${BASE}/api${path}`, {
         method,
-        headers: { 'Content-Type': 'application/json', Cookie: lowCookie },
+        headers: { 'Content-Type': 'application/json', Cookie: lowCookie, Origin: BASE },
         body: body ? JSON.stringify(body) : undefined,
       }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }));
 
@@ -247,8 +248,129 @@ console.log('\nLookups');
   check('audit log recorded the ban', audit.data.entries.some((e) => e.action === 'punish.ban'));
 }
 
+// --- 9. whitelist --------------------------------------------------------
+console.log('\nWhitelist');
+{
+  const TEST_ID = '999888777666555444';
+  db.prepare('DELETE FROM whitelist WHERE discord_id = ?').run(TEST_ID);
+
+  const add = await panel('/whitelist', { discordId: TEST_ID, label: 'smoke test entry' }, 'POST');
+  check('an ID can be whitelisted', add.status === 200);
+
+  const list = await panel('/whitelist');
+  check('whitelist lists the entry', list.data.entries.some((e) => e.discordId === TEST_ID));
+  check('whitelist reports it is enabled', list.data.enabled === true);
+
+  const bad = await panel('/whitelist', { discordId: 'not-a-snowflake' }, 'POST');
+  check('a malformed Discord ID is rejected', bad.status === 400);
+
+  const ownerId = process.env.OWNER_DISCORD_ID || config.discord.ownerId;
+  if (ownerId) {
+    db.prepare(
+      'INSERT OR IGNORE INTO whitelist (discord_id, label, added_at) VALUES (?, ?, ?)'
+    ).run(ownerId, 'configured owner', Date.now());
+    const delOwner = await panel(`/whitelist/${ownerId}`, null, 'DELETE');
+    check('the configured owner cannot be de-whitelisted', delOwner.status === 403);
+  }
+
+  const del = await panel(`/whitelist/${TEST_ID}`, null, 'DELETE');
+  check('an entry can be revoked', del.status === 200);
+}
+
+// --- 10. the owner role is unreachable -----------------------------------
+console.log('\nGame Owner cannot be granted');
+{
+  const victim = db.prepare("SELECT * FROM users WHERE role != 'game_owner' ORDER BY id LIMIT 1").get();
+  if (!victim) {
+    console.log('  SKIP  no non-owner account to test with');
+  } else {
+    const grant = await panel(`/staff/${victim.id}/role`, { role: 'game_owner' }, 'POST');
+    check('even the owner cannot grant game_owner via the API',
+      grant.status === 403 && grant.data.error === 'owner_role_is_env_only');
+
+    const meta = await panel('/meta');
+    check('game_owner is absent from the assignable list',
+      !meta.data.assignable?.includes('game_owner'));
+
+    const demote = await panel(`/staff/${owner.id}/role`, { role: 'moderator' }, 'POST');
+    check('the owner cannot be demoted through the API', demote.status === 403);
+  }
+}
+
+// --- 11. role renaming -----------------------------------------------------
+console.log('\nRole renaming');
+{
+  const rename = await panel('/roles/moderator', { name: 'Street Mod', color: '#12ab34' }, 'POST');
+  check('the owner can rename a rank', rename.status === 200 && rename.data.role.name === 'Street Mod');
+
+  const meta = await panel('/meta');
+  const moderator = meta.data.roles.find((r) => r.key === 'moderator');
+  check('the new name is served to the panel', moderator?.name === 'Street Mod');
+  check('the rank number is unchanged', moderator?.rank === 20);
+  check('the original name is remembered', moderator?.defaultName === 'Moderator');
+
+  const badColor = await panel('/roles/moderator', { name: 'x', color: 'red' }, 'POST');
+  check('a non-hex colour is rejected', badColor.status === 400);
+
+  const badRole = await panel('/roles/not_a_role', { name: 'x' }, 'POST');
+  check('an unknown role key is rejected', badRole.status === 400);
+
+  const reset = await panel('/roles/moderator', null, 'DELETE');
+  check('a rename can be reset', reset.status === 200 && reset.data.role.name === 'Moderator');
+
+  const chatMod = db.prepare("SELECT * FROM users WHERE role = 'chat_mod' LIMIT 1").get();
+  if (chatMod) {
+    const lowSid = crypto.randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(lowSid, chatMod.id, Date.now(), Date.now() + 3600_000, Date.now(), 'smoke-test');
+    const lowCookie = `zhc_sid=${lowSid}.${crypto.createHmac('sha256', config.sessionSecret).update(lowSid).digest('base64url')}`;
+    const res = await fetch(`${BASE}/api/roles/moderator`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: lowCookie, Origin: BASE },
+      body: JSON.stringify({ name: 'Hacked' }),
+    });
+    check('a chat mod cannot rename ranks', res.status === 403);
+  }
+}
+
+// --- 12. request hardening --------------------------------------------------
+console.log('\nRequest hardening');
+{
+  const noOrigin = await fetch(`${BASE}/api/whitelist`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie },
+    body: JSON.stringify({ discordId: '111111111111111111' }),
+  });
+  check('a cookie-authed write with no Origin is blocked', noOrigin.status === 403);
+
+  const evilOrigin = await fetch(`${BASE}/api/whitelist`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Cookie: cookie, Origin: 'https://evil.example' },
+    body: JSON.stringify({ discordId: '111111111111111111' }),
+  });
+  check('a cross-site Origin is blocked', evilOrigin.status === 403);
+
+  const reads = await fetch(`${BASE}/api/stats/live`, { headers: { Cookie: cookie } });
+  check('reads still work without an Origin header', reads.status === 200);
+
+  const headers = await fetch(`${BASE}/`);
+  check('CSP header is sent', !!headers.headers.get('content-security-policy'));
+  check('clickjacking is blocked', headers.headers.get('x-frame-options') === 'DENY');
+  check('MIME sniffing is blocked', headers.headers.get('x-content-type-options') === 'nosniff');
+
+  const forged = crypto.randomBytes(32).toString('base64url');
+  const forgedCookie = `zhc_sid=${forged}.${crypto.randomBytes(32).toString('base64url')}`;
+  const forgedRes = await fetch(`${BASE}/api/me`, { headers: { Cookie: forgedCookie } });
+  check('a forged session cookie is rejected', forgedRes.status === 401);
+
+  const unsigned = await fetch(`${BASE}/api/me`, { headers: { Cookie: `zhc_sid=${sid}` } });
+  check('an unsigned session id is rejected', unsigned.status === 401);
+}
+
 // --- cleanup --------------------------------------------------------------
-db.prepare('DELETE FROM sessions WHERE user_agent = ?').run('smoke-test');
+db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
+db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();
 db.prepare('UPDATE api_keys SET revoked_at = ? WHERE label LIKE ?').run(Date.now(), 'smoke-test %');
 db.prepare('DELETE FROM server_players WHERE server_id = ?').run(SERVER_ID);
 db.prepare('DELETE FROM servers WHERE id = ?').run(SERVER_ID);

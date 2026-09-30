@@ -66,9 +66,17 @@ export function createSession(res, user, req) {
   const id = newId(32);
   const created = now();
   db.prepare(
-    `INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  ).run(id, user.id, created, created + config.sessionTtlMs, clientIp(req), req.headers['user-agent'] || null);
+    `INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    user.id,
+    created,
+    created + config.sessionTtlMs,
+    created,
+    clientIp(req),
+    req.headers['user-agent'] || null
+  );
   setCookie(res, COOKIE, `${id}.${sign(id)}`, config.sessionTtlMs);
   return id;
 }
@@ -85,21 +93,44 @@ export function clientIp(req) {
   return req.socket?.remoteAddress || null;
 }
 
+/** Idle timeout: a session untouched for this long is dead even if not expired. */
+const IDLE_TIMEOUT_MS = 12 * 60 * 60 * 1000;
+
 export function userFromRequest(req) {
   const id = verifySigned(parseCookies(req)[COOKIE]);
   if (!id) return null;
   const row = db
     .prepare(
-      `SELECT s.id AS sid, s.expires_at, u.*
+      `SELECT s.id AS sid, s.expires_at, s.user_agent AS session_ua, s.last_used_at, u.*
          FROM sessions s JOIN users u ON u.id = s.user_id
         WHERE s.id = ?`
     )
     .get(id);
   if (!row) return null;
-  if (row.expires_at < now()) {
+
+  const t = now();
+  if (row.expires_at < t) {
     db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
     return null;
   }
+
+  // Idle expiry.
+  if (row.last_used_at && t - row.last_used_at > IDLE_TIMEOUT_MS) {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    return null;
+  }
+
+  // Bind the session to the browser that created it. A cookie lifted onto a
+  // different client is rejected rather than silently accepted.
+  const ua = req.headers['user-agent'] || '';
+  if (row.session_ua && row.session_ua !== ua) {
+    db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
+    audit(row, 'security.session_ua_mismatch', `user:${row.id}`, null, clientIp(req));
+    return null;
+  }
+
+  db.prepare('UPDATE sessions SET last_used_at = ? WHERE id = ?').run(t, id);
+
   if (row.status !== 'active') return { ...row, suspended: true };
   return row;
 }
@@ -250,18 +281,35 @@ export function upsertUser(profile, req) {
 
   let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(profile.id);
 
-  const isConfiguredOwner = config.discord.ownerId && config.discord.ownerId === profile.id;
-  const isFirstAccountEver =
-    !config.discord.ownerId && db.prepare('SELECT COUNT(*) AS n FROM users').get().n === 1;
+  // Game Owner is granted by ONE thing only: an exact match on the
+  // OWNER_DISCORD_ID in the environment file. There is no "first account
+  // wins" fallback, and the panel API refuses to assign this role at all,
+  // so the only way to become owner is to have access to the server's .env.
+  const isConfiguredOwner =
+    !!config.discord.ownerId && config.discord.ownerId === profile.id;
 
-  if ((isConfiguredOwner || isFirstAccountEver) && user.role !== 'game_owner') {
+  if (isConfiguredOwner && user.role !== 'game_owner') {
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run('game_owner', user.id);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     audit(
       { id: null, discord_username: 'system', role: 'system' },
       'staff.bootstrap_owner',
       `user:${user.id}`,
-      isConfiguredOwner ? 'matched OWNER_DISCORD_ID' : 'first account created',
+      'matched OWNER_DISCORD_ID',
+      clientIp(req)
+    );
+  }
+
+  // Someone holding game_owner who is no longer the configured owner gets
+  // demoted on sight - covers a changed .env or a tampered database row.
+  if (!isConfiguredOwner && user.role === 'game_owner') {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run('co_owner', user.id);
+    user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
+    audit(
+      { id: null, discord_username: 'system', role: 'system' },
+      'security.owner_mismatch_demoted',
+      `user:${user.id}`,
+      'held game_owner without matching OWNER_DISCORD_ID',
       clientIp(req)
     );
   }

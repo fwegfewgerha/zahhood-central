@@ -51,6 +51,8 @@
     oauth_failed: 'Discord rejected the login. Try again in a moment.',
     guild_check_failed: 'Could not confirm your Discord server membership. Try again.',
     access_denied: 'You cancelled the Discord login.',
+    not_whitelisted: 'Your Discord account is not on the whitelist for this site. Ask an owner to add your Discord user ID.',
+    too_many_attempts: 'Too many failed sign-in attempts from your connection. Wait 15 minutes and try again.',
   };
   const params = new URLSearchParams(location.search);
   const err = params.get('error');

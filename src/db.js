@@ -32,12 +32,13 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
 
 CREATE TABLE IF NOT EXISTS sessions (
-  id          TEXT PRIMARY KEY,
-  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  created_at  INTEGER NOT NULL,
-  expires_at  INTEGER NOT NULL,
-  ip          TEXT,
-  user_agent  TEXT
+  id           TEXT PRIMARY KEY,
+  user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at   INTEGER NOT NULL,
+  expires_at   INTEGER NOT NULL,
+  last_used_at INTEGER,
+  ip           TEXT,
+  user_agent   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 
@@ -233,6 +234,46 @@ CREATE TABLE IF NOT EXISTS api_keys (
   revoked_at      INTEGER
 );
 
+-- ============ access control ============
+-- Only Discord IDs listed here may sign in at all (when enabled).
+CREATE TABLE IF NOT EXISTS whitelist (
+  discord_id    TEXT PRIMARY KEY,
+  label         TEXT,
+  note          TEXT,
+  added_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  added_by_name TEXT,
+  added_at      INTEGER NOT NULL
+);
+
+-- Site-wide settings the owner can flip without a redeploy.
+CREATE TABLE IF NOT EXISTS settings (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  updated_by TEXT,
+  updated_at INTEGER
+);
+
+-- Owner-editable display names/colors. Rank and key are never editable.
+CREATE TABLE IF NOT EXISTS role_overrides (
+  role_key   TEXT PRIMARY KEY,
+  name       TEXT,
+  color      TEXT,
+  updated_by TEXT,
+  updated_at INTEGER
+);
+
+-- Every rejected sign-in, for rate limiting and forensics.
+CREATE TABLE IF NOT EXISTS login_attempts (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id TEXT,
+  username   TEXT,
+  ip         TEXT,
+  reason     TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_time ON login_attempts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_attempts_ip   ON login_attempts(ip, created_at DESC);
+
 -- ============ audit ============
 CREATE TABLE IF NOT EXISTS audit_log (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -263,7 +304,53 @@ if (channelCount === 0) {
   ins.run('owners', 'owners-only', 'Co-Owner, Creator and the Game Owner.', 80, 7);
 }
 
+// --- migrations for databases created by an earlier version ---
+function addColumnIfMissing(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (cols.some((c) => c.name === column)) return;
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  console.log(`[db] migrated: added ${table}.${column}`);
+}
+addColumnIfMissing('sessions', 'last_used_at', 'INTEGER');
+
+// The whitelist is ON out of the box: a fresh install lets nobody in except
+// the configured OWNER_DISCORD_ID until that owner adds people by hand.
+const DEFAULT_SETTINGS = {
+  whitelist_enabled: '1',
+};
+const settingInsert = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
+for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {
+  settingInsert.run(key, value, Date.now());
+}
+
 export const now = () => Date.now();
+
+export function getSetting(key, fallback = null) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : fallback;
+}
+
+export function setSetting(key, value, actor) {
+  db.prepare(
+    `INSERT INTO settings (key, value, updated_by, updated_at) VALUES (?, ?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
+  ).run(key, String(value), actor?.discord_username ?? 'system', Date.now());
+}
+
+export function isWhitelistEnabled() {
+  return getSetting('whitelist_enabled', '1') === '1';
+}
+
+export function isWhitelisted(discordId) {
+  if (!discordId) return false;
+  return !!db.prepare('SELECT 1 AS x FROM whitelist WHERE discord_id = ?').get(String(discordId));
+}
+
+export function recordLoginAttempt({ discordId, username, ip, reason }) {
+  db.prepare(
+    'INSERT INTO login_attempts (discord_id, username, ip, reason, created_at) VALUES (?, ?, ?, ?, ?)'
+  ).run(discordId ?? null, username ?? null, ip ?? null, reason, Date.now());
+}
 
 export function audit(actor, action, target, detail, ip) {
   db.prepare(

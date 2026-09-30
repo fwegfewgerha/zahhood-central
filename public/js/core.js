@@ -87,6 +87,14 @@ export const ERRORS = {
   already_inactive: 'That punishment is already lifted or expired.',
   reason_required: 'A reason is required.',
   label_required: 'Give the key a name.',
+  bad_discord_id: 'That is not a valid Discord user ID (17-20 digits).',
+  cannot_remove_owner: 'The configured owner cannot be removed from the whitelist.',
+  owner_role_is_env_only: 'Game Owner can only be set in the server environment file, never from here.',
+  cannot_change_owner: 'The Game Owner’s role cannot be changed from the panel.',
+  bad_color: 'Use a hex colour like #ffa32e.',
+  bad_origin: 'That request was blocked as cross-site. Reload the page and try again.',
+  rate_limited: 'You are going too fast. Wait a moment.',
+  unknown_role: 'No such role.',
 };
 
 export function errMessage(err) {

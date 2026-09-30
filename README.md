@@ -21,6 +21,9 @@ a ban issued on the website lands on a live server within one heartbeat.
 | Ban appeals filed by players, ruled on by staff | Appeals |
 | API keys the game authenticates with | Game Connection |
 | Audit log of every staff action | Audit Log |
+| Whitelist: only approved Discord IDs may sign in | Access & Security |
+| Rejected sign-ins, active sessions, posture checks | Access & Security |
+| Owner-editable rank names and colours | Staff Team |
 
 ---
 
@@ -65,7 +68,8 @@ npm start                    # terminal 1
 node scripts/smoke-test.js   # terminal 2
 ```
 
-38 assertions covering auth, the heartbeat, the ban pipeline, rank enforcement and lookups.
+63 assertions covering auth, the heartbeat, the ban pipeline, rank enforcement, the
+whitelist, role renaming, the Game Owner lock, CSRF and session forgery.
 
 ---
 
@@ -87,6 +91,38 @@ or the Game Owner gives them a staff role from the **Staff Team** page.
 > you are never locked out. Set it properly before the site is public.
 
 ---
+
+## Access control
+
+Three independent gates stand between a stranger and the panel:
+
+1. **The whitelist.** On by default. A Discord ID that is not listed cannot sign in
+   at all, whatever else is true. Manage it on the **Access & Security** page.
+   The configured owner is always allowed through, so an empty list can never
+   lock you out of your own site.
+2. **The Discord server lock** (optional). Set `DISCORD_GUILD_ID` and only members
+   of that Discord server get in.
+3. **The staff role.** Getting through the door is not access. A new account is a
+   Member with no permissions until somebody with `staff.manage` gives it a role.
+
+Removing someone from the whitelist ends every session they have, immediately.
+
+### Game Owner cannot be granted
+
+This one is deliberately absolute:
+
+- Game Owner is set by **one thing only** — an exact match on `OWNER_DISCORD_ID`
+  in the server's `.env`, checked on every login.
+- The API refuses to assign `game_owner` to anyone, at any rank, including the
+  owner. It is not in the assignable list, and the endpoint rejects it outright.
+- The owner's role cannot be changed through the panel either.
+- Any account found holding `game_owner` without matching `OWNER_DISCORD_ID` is
+  **demoted to Co-Owner automatically** — at boot, and again on their next login.
+  That covers a restored backup, a stale row, or somebody with direct database
+  access.
+
+So to become Game Owner, you need to be able to edit the `.env` file on the
+server. Nothing short of that will do it.
 
 ## The staff ladder
 
@@ -112,6 +148,11 @@ Co-Owner, Creator and Game Owner are the only three ranks above Owner Assistant,
 specified. Edit `src/roles.js` to rename roles or move a permission's threshold — it is the one
 place the ladder is defined.
 
+The Game Owner can rename and recolour any rank from **Staff Team → The ladder**.
+Renaming is cosmetic by design: `key`, `rank` and `staff` are structural and are
+never editable, so a rename can never reshuffle who outranks whom. "Reset to
+default" puts the shipped name back.
+
 Guardrails that are enforced server-side, not just hidden in the UI:
 
 - you can never assign a role at or above your own
@@ -119,6 +160,7 @@ Guardrails that are enforced server-side, not just hidden in the UI:
 - you can only lift a punishment issued by someone below you (or your own)
 - you cannot punish a player whose linked staff account outranks you
 - a chat room above your rank is not just hidden, the API refuses it
+- nobody can grant, take or hold Game Owner (see above)
 
 ---
 
@@ -195,15 +237,41 @@ roblox/           the Lua script that goes in your game
 scripts/          dev-seed, fake-server, smoke-test
 ```
 
-Security notes worth knowing:
+### Security
 
-- Sessions are random IDs stored server-side; the cookie carries an HMAC so a forged ID is
-  useless. `HttpOnly`, `SameSite=Lax`, and `Secure` once `BASE_URL` is https.
-- API keys are stored as SHA-256 hashes. The plaintext is shown once at creation.
-- Player IP addresses are never stored — only a salted hash, used for the alt-account hint.
-- Every permission is re-checked on the server for each request.
-- Websocket messages are filtered by rank before they are sent, so a Chat Moderator's browser
-  never receives owners-room traffic at all.
+**Sessions.** Random IDs stored server-side; the cookie carries an HMAC, so a forged or
+edited ID is rejected. `HttpOnly`, `SameSite=Lax`, and `Secure` once `BASE_URL` is https.
+Each session is pinned to the User-Agent that created it, expires after 7 days, and dies
+after 12 hours idle. Suspending someone, or removing them from the whitelist, deletes
+their sessions on the spot.
+
+**CSRF.** `SameSite=Lax` blocks cross-site form posts on its own. On top of that, every
+cookie-authenticated write must carry an `Origin` (or `Referer`) belonging to this site,
+or it is refused with `bad_origin` and logged. Reads are unaffected. The game API is
+exempt — it uses a key, carries no cookies, and Roblox sends no Origin.
+
+**Rate limiting.** Sliding windows per IP: 15 login starts per 10 minutes, 600 panel
+requests per minute (per user once signed in), 1200 game requests per minute per key.
+Separately, 10 *rejected* sign-ins from one IP in 15 minutes locks that IP out of the
+login entirely. Every rejection is recorded with its reason and shown on the
+Access & Security page.
+
+**Headers.** CSP locked to `self` plus Discord and Roblox images, `frame-ancestors 'none'`,
+`object-src 'none'`, nosniff, `X-Frame-Options: DENY`, restrictive `Permissions-Policy`,
+and HSTS once you are on https.
+
+**Proxies.** `X-Forwarded-For` is only trusted when `TRUST_PROXY=1`. Leave it off unless a
+reverse proxy really is in front of the app — otherwise anyone can spoof their IP with a
+header and walk past the rate limiter.
+
+**Startup checks.** The server audits its own configuration on boot and prints problems: a
+weak or missing `SESSION_SECRET`, a missing `OWNER_DISCORD_ID`, production over plain HTTP,
+an open guild lock.
+
+**Other.** API keys are stored as SHA-256 hashes and shown in plaintext exactly once. Player
+IPs are never stored, only a salted hash used for the alt-account hint. Every permission is
+re-checked server-side on every request. Websocket traffic is filtered by rank before it is
+sent, so a Chat Moderator's browser never receives owners-room messages at all.
 
 ---
 
@@ -215,6 +283,7 @@ Any host that runs Node and gives you a persistent disk for `data/zahhood.db` wo
 - set `BASE_URL` to your https URL and update the Discord redirect to match
 - set a long random `SESSION_SECRET` and keep it stable, or everyone gets logged out on restart
 - set `NODE_ENV=production`
+- set `TRUST_PROXY=1` (only because a proxy really is in front of it)
 - make sure websockets are proxied (`/ws`)
 - back up `data/zahhood.db` — it is the whole database
 

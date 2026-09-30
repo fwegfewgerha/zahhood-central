@@ -50,9 +50,11 @@ const owner = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(PEOPLE[
 
 // A signed session cookie so you can open the panel without Discord.
 const sid = newId(32);
+// user_agent is left NULL: sessions are pinned to the browser that created
+// them, and this one is handed to whatever browser you paste it into.
 db.prepare(
-  'INSERT INTO sessions (id, user_id, created_at, expires_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?)'
-).run(sid, owner.id, t, t + config.sessionTtlMs, '127.0.0.1', 'dev-seed');
+  'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+).run(sid, owner.id, t, t + config.sessionTtlMs, t, 'dev-seed');
 const mac = crypto.createHmac('sha256', config.sessionSecret).update(sid).digest('base64url');
 const cookie = `zhc_sid=${sid}.${mac}`;
 

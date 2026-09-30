@@ -265,15 +265,96 @@ export async function staffView(view) {
         el('span', { style: { width: '4px', height: '20px', borderRadius: '2px', background: r.color, flex: '0 0 auto' } }),
         el('b', { style: { fontSize: '13px', minWidth: '180px' } }, r.name),
         el('span', { class: 'muted mono', style: { fontSize: '11.5px' } }, `rank ${r.rank}`),
+        r.renamed
+          ? el('span', { class: 'muted', style: { fontSize: '11px' } }, `was "${r.defaultName}"`)
+          : null,
         el('span', { class: 'muted', style: { marginLeft: 'auto', fontSize: '12px' } },
           count ? `${count} member${count === 1 ? '' : 's'}` : '—'),
-        r.key === state.me.role ? el('span', { class: 'pill info' }, 'you') : null));
+        r.key === state.me.role ? el('span', { class: 'pill info' }, 'you') : null,
+        can('roles.rename')
+          ? el('button', { class: 'btn sm', onclick: () => renameDialog(r) }, 'Rename')
+          : null));
     }
     body.append(list,
       el('div', { class: 'muted', style: { fontSize: '12px', marginTop: '14px' } },
         'A higher rank can always act on a lower one, and never on an equal or higher one. ',
-        'Co-Owner, Creator and Game Owner are the only three ranks above Owner Assistant.'));
-    return el('div', { class: 'card' }, el('div', { class: 'card-head' }, el('h3', {}, 'The ladder')), body);
+        'Co-Owner, Creator and Game Owner are the only three ranks above Owner Assistant.',
+        can('roles.rename')
+          ? ' You can rename and recolour any of these; the rank order never changes.'
+          : ''));
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, 'The ladder'),
+        el('div', { class: 'spacer' }),
+        can('roles.rename')
+          ? el('span', { class: 'muted', style: { fontSize: '12px' } }, 'you can rename these')
+          : null),
+      body);
+  }
+
+  /** Game Owner only: rename / recolour a rank. Rank order is untouched. */
+  function renameDialog(r) {
+    const nameInput = el('input', { type: 'text', value: r.name, maxlength: 40 });
+    const colorInput = el('input', { type: 'color', value: r.color, style: { height: '38px', padding: '3px' } });
+    const preview = el('span', {
+      class: 'pill role',
+      style: { color: r.color, borderColor: r.color + '55', background: r.color + '18' },
+    }, r.name);
+
+    const sync = () => {
+      const name = nameInput.value.trim() || r.defaultName;
+      const color = colorInput.value;
+      preview.textContent = name;
+      preview.style.color = color;
+      preview.style.borderColor = color + '55';
+      preview.style.background = color + '18';
+    };
+    nameInput.addEventListener('input', sync);
+    colorInput.addEventListener('input', sync);
+
+    modal({
+      title: `Rename rank ${r.rank}`,
+      body: el('div', {},
+        el('div', { style: { marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' } },
+          el('span', { class: 'muted', style: { fontSize: '12.5px' } }, 'Preview:'), preview),
+        el('label', { class: 'field' }, el('span', {}, 'Display name'), nameInput),
+        el('label', { class: 'field' }, el('span', {}, 'Colour'), colorInput),
+        el('div', { class: 'muted', style: { fontSize: '12px' } },
+          `This only changes what the rank is called. It stays at rank ${r.rank}, `,
+          'with exactly the same powers and the same position in the ladder. ',
+          r.key === 'game_owner'
+            ? 'Renaming Game Owner does not change how it is granted — that is still the environment file alone.'
+            : '')),
+      actions: [
+        r.renamed
+          ? {
+              label: 'Reset to default',
+              onClick: async () => {
+                await api(`/roles/${r.key}`, { method: 'DELETE' });
+                toast(`Reset to "${r.defaultName}".`, 'ok');
+                await reloadMeta();
+              },
+            }
+          : { label: 'Cancel' },
+        {
+          kind: 'primary', label: 'Save',
+          onClick: async () => {
+            const name = nameInput.value.trim();
+            if (!name) { toast('Give the rank a name.', 'err'); return 'keep'; }
+            await api(`/roles/${r.key}`, { method: 'POST', body: { name, color: colorInput.value } });
+            toast(`Rank ${r.rank} is now "${name}".`, 'ok');
+            await reloadMeta();
+          },
+        },
+      ],
+      onOpen: () => nameInput.focus(),
+    });
+  }
+
+  /** Role names live in state.meta, so pull it fresh after a rename. */
+  async function reloadMeta() {
+    state.meta = await api('/meta');
+    staffView(view);
   }
 
   function roleDialog(u) {

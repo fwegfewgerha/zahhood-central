@@ -1,8 +1,11 @@
 import express from 'express';
-import { db, now, audit, jsonOr } from '../db.js';
+import { db, now, audit, jsonOr, isWhitelistEnabled, setSetting } from '../db.js';
 import { config, SITE } from '../config.js';
 import { publicUser, requireLogin, requireStaff, requirePerm, avatarUrl, clientIp } from '../auth.js';
-import { can, rankOf, role as roleInfo, publicRoleList, assignableRoles, outranks, isStaff } from '../roles.js';
+import {
+  can, rankOf, role as roleInfo, publicRoleList, assignableRoles, outranks, isStaff,
+  setRoleAppearance, resetRoleAppearance,
+} from '../roles.js';
 import { broadcast, onlineStaff } from '../realtime.js';
 import { liveSnapshot, history, reapDeadServers } from '../stats.js';
 import {
@@ -16,6 +19,7 @@ import {
   expirePunishments,
 } from '../moderation.js';
 import { createKey, listKeys, revokeKey } from '../apikeys.js';
+import { auditConfiguration } from '../security.js';
 
 export const apiRouter = express.Router();
 
@@ -646,6 +650,16 @@ apiRouter.post('/staff/:userId/role', requirePerm('staff.manage'), (req, res) =>
   if (!publicRoleList().some((r) => r.key === newRole)) return res.status(400).json({ error: 'bad_role' });
 
   if (target.id === req.user.id) return res.status(403).json({ error: 'cannot_change_own_role' });
+
+  // Game Owner is granted by OWNER_DISCORD_ID alone. No API path assigns it,
+  // and no API path takes it away either.
+  if (newRole === 'game_owner') {
+    audit(req.user, 'security.owner_grant_blocked', `user:${targetId}`, null, clientIp(req));
+    return res.status(403).json({ error: 'owner_role_is_env_only' });
+  }
+  if (target.role === 'game_owner') {
+    return res.status(403).json({ error: 'cannot_change_owner' });
+  }
   // You may only act on people below you, and only hand out roles below you.
   if (!outranks(req.user.role, target.role)) {
     return res.status(403).json({ error: 'target_outranks_you', targetRole: target.role });
@@ -721,6 +735,185 @@ apiRouter.delete('/apikeys/:id', requirePerm('apikeys.manage'), (req, res) => {
   const ok = revokeKey(int(req.params.id), req.user);
   res.json({ ok });
 });
+
+// ---------------------------------------------------------------
+// whitelist - who is allowed to sign in at all
+// ---------------------------------------------------------------
+apiRouter.get('/whitelist', requirePerm('whitelist.view'), (req, res) => {
+  const rows = db.prepare('SELECT * FROM whitelist ORDER BY added_at DESC').all();
+  const linked = db.prepare('SELECT discord_id, discord_username, role, status FROM users').all();
+  const byId = Object.fromEntries(linked.map((u) => [u.discord_id, u]));
+
+  res.json({
+    enabled: isWhitelistEnabled(),
+    ownerId: config.discord.ownerId || null,
+    guildLock: config.discord.guildId || null,
+    entries: rows.map((w) => ({
+      discordId: w.discord_id,
+      label: w.label,
+      note: w.note,
+      addedBy: w.added_by_name,
+      addedAt: w.added_at,
+      hasLoggedIn: !!byId[w.discord_id],
+      username: byId[w.discord_id]?.discord_username ?? null,
+      role: byId[w.discord_id]?.role ?? null,
+      roleName: byId[w.discord_id] ? roleInfo(byId[w.discord_id].role).name : null,
+      status: byId[w.discord_id]?.status ?? null,
+    })),
+  });
+});
+
+apiRouter.post('/whitelist', requirePerm('whitelist.manage'), (req, res) => {
+  const discordId = text(req.body?.discordId, 24);
+  if (!discordId || !/^\d{17,20}$/.test(discordId)) {
+    return res.status(400).json({ error: 'bad_discord_id' });
+  }
+  db.prepare(
+    `INSERT INTO whitelist (discord_id, label, note, added_by, added_by_name, added_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(discord_id) DO UPDATE SET label = excluded.label, note = excluded.note`
+  ).run(
+    discordId,
+    text(req.body?.label, 60),
+    text(req.body?.note, 300),
+    req.user.id,
+    req.user.discord_username,
+    now()
+  );
+  audit(req.user, 'whitelist.add', `discord:${discordId}`, text(req.body?.label, 60), clientIp(req));
+  res.json({ ok: true });
+});
+
+apiRouter.delete('/whitelist/:discordId', requirePerm('whitelist.manage'), (req, res) => {
+  const discordId = String(req.params.discordId);
+
+  if (config.discord.ownerId && discordId === config.discord.ownerId) {
+    return res.status(403).json({ error: 'cannot_remove_owner' });
+  }
+
+  // You cannot revoke access from somebody who outranks you.
+  const target = db.prepare('SELECT role FROM users WHERE discord_id = ?').get(discordId);
+  if (target && !outranks(req.user.role, target.role)) {
+    return res.status(403).json({ error: 'target_outranks_you', targetRole: target.role });
+  }
+
+  const info = db.prepare('DELETE FROM whitelist WHERE discord_id = ?').run(discordId);
+
+  // Removing someone from the whitelist ends their session immediately.
+  if (req.query.revoke !== '0' && target) {
+    const user = db.prepare('SELECT id FROM users WHERE discord_id = ?').get(discordId);
+    if (user) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(user.id);
+  }
+
+  audit(req.user, 'whitelist.remove', `discord:${discordId}`, null, clientIp(req));
+  res.json({ ok: true, removed: info.changes > 0 });
+});
+
+apiRouter.post('/whitelist/enabled', requirePerm('settings.manage'), (req, res) => {
+  const enabled = req.body?.enabled === true || req.body?.enabled === '1';
+  setSetting('whitelist_enabled', enabled ? '1' : '0', req.user);
+  audit(req.user, 'settings.whitelist_enabled', null, enabled ? 'on' : 'off', clientIp(req));
+  res.json({ ok: true, enabled });
+});
+
+// ---------------------------------------------------------------
+// role renaming - Game Owner only, cosmetic only
+// ---------------------------------------------------------------
+apiRouter.post('/roles/:key', requirePerm('roles.rename'), (req, res) => {
+  const result = setRoleAppearance(
+    String(req.params.key),
+    { name: req.body?.name, color: req.body?.color },
+    req.user
+  );
+  if (result.error) return res.status(400).json(result);
+  audit(req.user, 'roles.rename', `role:${req.params.key}`, `${req.body?.name ?? ''} ${req.body?.color ?? ''}`.trim(), clientIp(req));
+  broadcast({ type: 'roles_changed', roles: publicRoleList() }, 0);
+  res.json({ ok: true, role: result.role, roles: publicRoleList() });
+});
+
+apiRouter.delete('/roles/:key', requirePerm('roles.rename'), (req, res) => {
+  const result = resetRoleAppearance(String(req.params.key));
+  if (result.error) return res.status(400).json(result);
+  audit(req.user, 'roles.reset', `role:${req.params.key}`, null, clientIp(req));
+  broadcast({ type: 'roles_changed', roles: publicRoleList() }, 0);
+  res.json({ ok: true, role: result.role, roles: publicRoleList() });
+});
+
+// ---------------------------------------------------------------
+// security overview
+// ---------------------------------------------------------------
+apiRouter.get('/security', requirePerm('security.view'), (req, res) => {
+  const t = now();
+  const dayAgo = t - 864e5;
+
+  const rejected = db
+    .prepare('SELECT * FROM login_attempts WHERE created_at > ? ORDER BY id DESC LIMIT 100')
+    .all(t - 7 * 864e5);
+
+  const sessions = db
+    .prepare(
+      `SELECT s.id, s.created_at, s.last_used_at, s.ip, s.user_agent, u.discord_username, u.role, u.id AS user_id
+         FROM sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.expires_at > ? ORDER BY s.last_used_at DESC LIMIT 100`
+    )
+    .all(t);
+
+  const owners = db.prepare("SELECT discord_id, discord_username FROM users WHERE role = 'game_owner'").all();
+
+  res.json({
+    config: auditConfiguration(),
+    whitelistEnabled: isWhitelistEnabled(),
+    whitelistCount: db.prepare('SELECT COUNT(*) AS n FROM whitelist').get().n,
+    guildLock: config.discord.guildId || null,
+    ownerConfigured: !!config.discord.ownerId,
+    owners: owners.map((o) => ({ discordId: o.discord_id, username: o.discord_username })),
+    rejected24h: db
+      .prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE created_at > ?')
+      .get(dayAgo).n,
+    rejectedLogins: rejected.map((r) => ({
+      id: r.id,
+      discordId: r.discord_id,
+      username: r.username,
+      ip: r.ip,
+      reason: r.reason,
+      at: r.created_at,
+    })),
+    sessions: sessions.map((s) => ({
+      id: s.id.slice(0, 8),
+      userId: s.user_id,
+      username: s.discord_username,
+      role: s.role,
+      roleName: roleInfo(s.role).name,
+      ip: s.ip,
+      device: shortenAgent(s.user_agent),
+      createdAt: s.created_at,
+      lastUsed: s.last_used_at,
+      isYou: s.id === req.user.sid,
+    })),
+  });
+});
+
+apiRouter.post('/security/sessions/revoke', requirePerm('staff.remove'), (req, res) => {
+  const userId = int(req.body?.userId);
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(userId);
+  if (!target) return res.status(404).json({ error: 'user_not_found' });
+  if (target.id !== req.user.id && !outranks(req.user.role, target.role)) {
+    return res.status(403).json({ error: 'target_outranks_you' });
+  }
+  const info = db.prepare('DELETE FROM sessions WHERE user_id = ?').run(userId);
+  audit(req.user, 'security.sessions_revoked', `user:${userId}`, `${info.changes} session(s)`, clientIp(req));
+  res.json({ ok: true, revoked: info.changes });
+});
+
+function shortenAgent(ua) {
+  if (!ua) return 'unknown';
+  if (/Edg\//.test(ua)) return 'Edge';
+  if (/OPR\//.test(ua)) return 'Opera';
+  if (/Chrome\//.test(ua)) return 'Chrome';
+  if (/Firefox\//.test(ua)) return 'Firefox';
+  if (/Safari\//.test(ua)) return 'Safari';
+  return ua.slice(0, 40);
+}
 
 // ---------------------------------------------------------------
 // audit log

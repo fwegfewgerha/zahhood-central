@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from '../config.js';
-import { db, now, audit } from '../db.js';
+import { db, now, audit, isWhitelistEnabled, isWhitelisted } from '../db.js';
+import { tooManyFailedLogins, noteFailedLogin, clientIpOf } from '../security.js';
 import {
   discordAuthorizeUrl,
   consumeState,
@@ -38,11 +39,27 @@ authRouter.get('/discord/callback', async (req, res) => {
   const st = consumeState(req, res, String(state));
   if (!st.ok) return fail(res, 'bad_state');
 
+  // Shut out an IP that keeps getting rejected.
+  if (tooManyFailedLogins(clientIpOf(req))) {
+    return fail(res, 'too_many_attempts');
+  }
+
   try {
     const token = await exchangeCode(String(code));
     const profile = await discordGet('/users/@me', token.access_token);
 
-    // Optional gate: you must be in the configured Discord server.
+    const ip = clientIp(req);
+    const isOwner = !!config.discord.ownerId && config.discord.ownerId === profile.id;
+
+    // Gate 1: the whitelist. The configured owner is always allowed through
+    // so an empty list can never lock the site's own owner out.
+    if (isWhitelistEnabled() && !isOwner && !isWhitelisted(profile.id)) {
+      noteFailedLogin({ discordId: profile.id, username: profile.username, ip, reason: 'not_whitelisted' });
+      audit(null, 'security.login_rejected', `discord:${profile.id}`, `${profile.username} is not whitelisted`, ip);
+      return fail(res, 'not_whitelisted');
+    }
+
+    // Gate 2: optional Discord server membership.
     if (config.discord.guildId) {
       let guilds = [];
       try {
@@ -51,13 +68,17 @@ authRouter.get('/discord/callback', async (req, res) => {
         return fail(res, 'guild_check_failed');
       }
       if (!guilds.some((g) => g.id === config.discord.guildId)) {
-        audit(null, 'auth.rejected_not_in_guild', `discord:${profile.id}`, profile.username, clientIp(req));
+        noteFailedLogin({ discordId: profile.id, username: profile.username, ip, reason: 'not_in_guild' });
+        audit(null, 'auth.rejected_not_in_guild', `discord:${profile.id}`, profile.username, ip);
         return fail(res, 'not_in_server');
       }
     }
 
     const user = upsertUser(profile, req);
-    if (user.status !== 'active') return fail(res, 'account_suspended');
+    if (user.status !== 'active') {
+      noteFailedLogin({ discordId: profile.id, username: profile.username, ip, reason: 'suspended' });
+      return fail(res, 'account_suspended');
+    }
 
     createSession(res, user, req);
     res.redirect(st.returnTo || '/panel');

@@ -10,28 +10,45 @@ import { gameRouter } from './routes/game.js';
 import { initRealtime } from './realtime.js';
 import { startStatsLoop, sampleNow } from './stats.js';
 import { keyCount } from './apikeys.js';
+import {
+  securityHeaders, rateLimit, requireSameOrigin, clientIpOf, auditConfiguration,
+  enforceOwnerInvariant,
+} from './security.js';
+import { isWhitelistEnabled, db } from './db.js';
 
 const app = express();
-app.set('trust proxy', 1);
+app.set('trust proxy', config.trustProxy ? 1 : false);
 app.disable('x-powered-by');
+app.disable('etag');
 
-app.use(express.json({ limit: '1mb' }));
-app.use(express.urlencoded({ extended: false }));
-
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('Referrer-Policy', 'same-origin');
-  res.setHeader('X-Frame-Options', 'DENY');
-  next();
-});
-
+app.use(express.json({ limit: '256kb' }));
+app.use(express.urlencoded({ extended: false, limit: '64kb' }));
+app.use(securityHeaders);
 app.use(attachUser);
 
+// ---- rate limits ----
+// Starting a login is cheap to attempt, so it is the tightest.
+const loginLimiter = rateLimit({ name: 'login', limit: 15, windowMs: 10 * 60_000 });
+// The panel is chatty (polling, search-as-you-type) so this is generous.
+const panelLimiter = rateLimit({
+  name: 'panel',
+  limit: 600,
+  windowMs: 60_000,
+  keyFn: (req) => (req.user ? `u${req.user.id}` : clientIpOf(req)),
+});
+// A busy game sends a lot: heartbeats plus per-join checks from many servers.
+const gameLimiter = rateLimit({
+  name: 'game',
+  limit: 1200,
+  windowMs: 60_000,
+  keyFn: (req) => req.get('x-zhc-key')?.slice(-12) || clientIpOf(req),
+});
+
 // ---- routes ----
-app.use('/auth', authRouter);
-app.use('/api/game', gameRouter); // Roblox -> site (API key auth)
-app.use('/api/appeal', appealRouter); // any logged-in user
-app.use('/api', apiRouter); // panel (Discord session auth)
+app.use('/auth', loginLimiter, authRouter);
+app.use('/api/game', gameLimiter, gameRouter); // Roblox -> site (API key auth, no cookies)
+app.use('/api/appeal', panelLimiter, requireSameOrigin, appealRouter); // any logged-in user
+app.use('/api', panelLimiter, requireSameOrigin, apiRouter); // panel (Discord session auth)
 
 app.get('/healthz', (req, res) => res.json({ ok: true, name: SITE.name, t: Date.now() }));
 
@@ -81,6 +98,19 @@ server.listen(config.port, () => {
   console.log(`  Discord      ${config.discord.clientId ? 'configured' : 'NOT CONFIGURED - logins will fail'}`);
   console.log(`  Guild lock   ${config.discord.guildId || 'off (anyone with Discord may log in)'}`);
   console.log(`  Game keys    ${keyCount()} active`);
+  const allowed = db.prepare('SELECT COUNT(*) AS n FROM whitelist').get().n;
+  console.log(
+    `  Whitelist    ${isWhitelistEnabled() ? `ON - ${allowed} allowed` : 'OFF - anyone with Discord may sign in'}`
+  );
+  console.log(`  Owner        ${config.discord.ownerId || 'NOT SET - nobody can be Game Owner'}`);
+  console.log(line);
+
+  enforceOwnerInvariant();
+
+  const { problems, warnings } = auditConfiguration();
+  for (const p of problems) console.log(`  [!]  ${p}`);
+  for (const w of warnings) console.log(`  [~]  ${w}`);
+  if (!problems.length && !warnings.length) console.log('  All security checks passed.');
   console.log(`${line}\n`);
 });
 

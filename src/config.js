@@ -49,6 +49,11 @@ export const config = {
   serverTimeoutMs: Number(env.SERVER_TIMEOUT_SECONDS || 90) * 1000,
   dbPath: env.DB_PATH || path.join(ROOT, 'data', 'zahhood.db'),
   isProd: env.NODE_ENV === 'production',
+
+  // Only turn this on when a reverse proxy really is in front of the app.
+  // With it on and no proxy, anyone can spoof their IP with a header and
+  // walk straight past the rate limiter.
+  trustProxy: env.TRUST_PROXY === '1' || env.TRUST_PROXY === 'true',
 };
 
 export const SITE = {
