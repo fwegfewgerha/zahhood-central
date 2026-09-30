@@ -1,0 +1,17 @@
+{
+  "name": "zahhood-central",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zah Hood Central - staff panel, player database, ban system and live stats for the Zah Hood Roblox experience.",
+  "type": "module",
+  "engines": { "node": ">=22.5.0" },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node scripts/seed.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}

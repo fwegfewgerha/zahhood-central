@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zah Hood Central</title>
+<meta name="description" content="Staff panel, player database and live stats for the Zah Hood Roblox experience.">
+<link rel="stylesheet" href="/css/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%23ffa32e'/><text x='16' y='23' font-size='17' font-family='sans-serif' font-weight='bold' text-anchor='middle' fill='%23241705'>Z</text></svg>">
+</head>
+<body>
+<main class="landing">
+  <div class="landing-card">
+    <div class="brand-mark">
+      <span class="glyph">ZH</span>
+    </div>
+    <h1>Zah Hood Central</h1>
+    <p class="tagline">Everything that moves in the hood, logged.</p>
+
+    <div id="error-slot"></div>
+
+    <a class="btn-discord" href="/auth/discord">
+      <svg viewBox="0 0 24 24"><path d="M20.317 4.369a19.79 19.79 0 00-4.885-1.515.074.074 0 00-.079.037c-.21.375-.444.864-.608 1.249a18.27 18.27 0 00-5.487 0 12.64 12.64 0 00-.617-1.25.077.077 0 00-.079-.036A19.736 19.736 0 003.677 4.37a.07.07 0 00-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 00.031.057 19.9 19.9 0 005.993 3.03.078.078 0 00.084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 00-.041-.106 13.1 13.1 0 01-1.872-.892.077.077 0 01-.008-.128c.126-.094.252-.192.372-.291a.074.074 0 01.077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 01.078.009c.12.099.246.198.373.292a.077.077 0 01-.006.127c-.598.35-1.22.644-1.873.892a.077.077 0 00-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 00.084.028 19.839 19.839 0 006.002-3.03.077.077 0 00.032-.056c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 00-.031-.028zM8.02 15.331c-1.182 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+      Continue with Discord
+    </a>
+
+    <p class="note">Access is Discord-only. Your staff role is read from this site, not from your Discord roles.</p>
+
+    <div class="feature-grid">
+      <div class="feature"><b>Player database</b><span>Every account that has ever joined, with stats and history.</span></div>
+      <div class="feature"><b>Ban system</b><span>Warns, mutes, kicks and bans that reach live servers.</span></div>
+      <div class="feature"><b>Live stats</b><span>Players, servers and performance as it happens.</span></div>
+      <div class="feature"><b>Server lookup</b><span>Paste a server ID, see exactly who is inside it.</span></div>
+      <div class="feature"><b>Staff chat</b><span>Rooms gated by rank, from Chat Mod to Game Owner.</span></div>
+      <div class="feature"><b>Appeals</b><span>Banned players plead their case; staff rule on it.</span></div>
+    </div>
+
+    <p class="note" style="margin-top:22px">
+      Banned and want to appeal? <a href="/appeal">Open an appeal</a>.
+    </p>
+  </div>
+</main>
+
+<script>
+  const MESSAGES = {
+    discord_not_configured: 'Discord login is not set up on this server yet. The owner needs to fill in DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET.',
+    not_in_server: 'You are not a member of the Zah Hood Discord server, so you cannot sign in here.',
+    account_suspended: 'This account has been suspended from the panel.',
+    bad_state: 'That login attempt expired or was tampered with. Try again.',
+    missing_code: 'Discord did not send a login code back. Try again.',
+    oauth_failed: 'Discord rejected the login. Try again in a moment.',
+    guild_check_failed: 'Could not confirm your Discord server membership. Try again.',
+    access_denied: 'You cancelled the Discord login.',
+  };
+  const params = new URLSearchParams(location.search);
+  const err = params.get('error');
+  if (err) {
+    const slot = document.getElementById('error-slot');
+    const div = document.createElement('div');
+    div.className = 'alert';
+    div.textContent = MESSAGES[err] || `Login failed: ${err}`;
+    slot.appendChild(div);
+  }
+</script>
+</body>
+</html>
