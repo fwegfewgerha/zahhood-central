@@ -357,6 +357,15 @@ export function lineChart(points, { color = '#ffa32e', fill = true, height = 180
 }
 
 // ---------------- websocket ----------------
+/** Tell the server which page we are on, for the traffic view. */
+export function reportRoute() {
+  const ws = state.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  try {
+    ws.send(JSON.stringify({ type: 'route', path: location.hash || '#/' }));
+  } catch { /* ignore */ }
+}
+
 export function on(type, handler) {
   if (!state.listeners.has(type)) state.listeners.set(type, new Set());
   state.listeners.get(type).add(handler);
@@ -384,6 +393,7 @@ export function connectSocket() {
     state.wsOpen = true;
     reconnectDelay = 1000;
     emit('_status', true);
+    reportRoute();
   };
 
   ws.onmessage = (ev) => {

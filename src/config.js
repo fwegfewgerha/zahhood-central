@@ -38,6 +38,8 @@ export const config = {
     redirectUri: env.DISCORD_REDIRECT_URI || `${(env.BASE_URL || 'http://localhost:3000').replace(/\/+$/, '')}/auth/discord/callback`,
     guildId: env.DISCORD_GUILD_ID || '',
     ownerId: env.OWNER_DISCORD_ID || '',
+    // The website owner. Outranks the Game Owner and is granted here alone.
+    ginId: env.GIN_DISCORD_ID || '',
   },
 
   roblox: {

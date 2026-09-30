@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { config } from './config.js';
 import { db, now, newId, audit } from './db.js';
-import { can, isStaff, permissionsFor, role as roleInfo } from './roles.js';
+import { can, isStaff, permissionsFor, role as roleInfo, PROTECTED_ROLES } from './roles.js';
 
 const COOKIE = 'zhc_sid';
 const STATE_COOKIE = 'zhc_state';
@@ -281,35 +281,41 @@ export function upsertUser(profile, req) {
 
   let user = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(profile.id);
 
-  // Game Owner is granted by ONE thing only: an exact match on the
-  // OWNER_DISCORD_ID in the environment file. There is no "first account
-  // wins" fallback, and the panel API refuses to assign this role at all,
-  // so the only way to become owner is to have access to the server's .env.
+  // The two top ranks are granted by ONE thing only: an exact match on an ID
+  // in the server's environment file. There is no "first account wins"
+  // fallback, and the panel API refuses to assign either of them, so the only
+  // way to hold one is to have access to the server's .env.
+  //
+  // Gin (the website owner) outranks Game Owner, and wins if both match.
+  const isGin = !!config.discord.ginId && config.discord.ginId === profile.id;
   const isConfiguredOwner =
-    !!config.discord.ownerId && config.discord.ownerId === profile.id;
+    !isGin && !!config.discord.ownerId && config.discord.ownerId === profile.id;
 
-  if (isConfiguredOwner && user.role !== 'game_owner') {
-    db.prepare('UPDATE users SET role = ? WHERE id = ?').run('game_owner', user.id);
+  const entitled = isGin ? 'gin' : isConfiguredOwner ? 'game_owner' : null;
+
+  if (entitled && user.role !== entitled) {
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(entitled, user.id);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     audit(
       { id: null, discord_username: 'system', role: 'system' },
       'staff.bootstrap_owner',
       `user:${user.id}`,
-      'matched OWNER_DISCORD_ID',
+      isGin ? 'matched GIN_DISCORD_ID' : 'matched OWNER_DISCORD_ID',
       clientIp(req)
     );
   }
 
-  // Someone holding game_owner who is no longer the configured owner gets
-  // demoted on sight - covers a changed .env or a tampered database row.
-  if (!isConfiguredOwner && user.role === 'game_owner') {
+  // Holding a protected rank without matching its ID gets you demoted on
+  // sight - covers a changed .env or a tampered database row.
+  if (!entitled && PROTECTED_ROLES.has(user.role)) {
+    const held = user.role;
     db.prepare('UPDATE users SET role = ? WHERE id = ?').run('co_owner', user.id);
     user = db.prepare('SELECT * FROM users WHERE id = ?').get(user.id);
     audit(
       { id: null, discord_username: 'system', role: 'system' },
       'security.owner_mismatch_demoted',
       `user:${user.id}`,
-      'held game_owner without matching OWNER_DISCORD_ID',
+      `held ${held} without matching its configured Discord ID`,
       clientIp(req)
     );
   }

@@ -2,13 +2,14 @@
 // Zah Hood Central - panel shell + router
 // ============================================================
 import {
-  state, el, clear, api, toast, errMessage, can, connectSocket, on,
+  state, el, clear, api, toast, errMessage, can, connectSocket, on, reportRoute,
 } from './core.js';
 import { dashboardView } from './views-game.js';
 import { playersView, playerView, punishmentsView, serversView, serverView } from './views-db.js';
 import { chatView, staffView, keysView, auditView, appealsView } from './views-team.js';
 import { accessView } from './views-access.js';
 import { permissionsView } from './views-perms.js';
+import { trafficView, visitorView } from './views-traffic.js';
 
 const ROUTES = {
   '': { title: 'Dashboard', render: dashboardView },
@@ -23,6 +24,8 @@ const ROUTES = {
   'keys': { title: 'Game Connection', render: keysView },
   'access': { title: 'Access & Security', render: accessView },
   'permissions': { title: 'Rank Permissions', render: permissionsView },
+  'traffic': { title: 'Website Traffic', render: trafficView },
+  'visitor': { title: 'Visitor', render: visitorView },
   'audit': { title: 'Audit Log', render: auditView },
 };
 
@@ -55,6 +58,7 @@ const NAV = [
       { href: '#/keys', ico: '⚯', text: 'Game Connection', perm: 'apikeys.view' },
       { href: '#/access', ico: '⚿', text: 'Access & Security', perm: 'whitelist.view' },
       { href: '#/permissions', ico: '☑', text: 'Rank Permissions', perm: 'roles.permissions' },
+      { href: '#/traffic', ico: '◉', text: 'Website Traffic', perm: 'traffic.view' },
       { href: '#/audit', ico: '≡', text: 'Audit Log', perm: 'audit.view' },
     ],
   },
@@ -222,6 +226,7 @@ async function route() {
   }
 
   document.getElementById('page-title').textContent = def.title;
+  reportRoute();
   const view = document.getElementById('view');
   view.className = `view${def.flush ? ' flush' : ''}`;
   clear(view).append(el('div', { class: 'loading' }, 'Loading...'));

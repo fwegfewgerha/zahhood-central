@@ -25,7 +25,16 @@ const BASE_ROLES = [
   { key: 'co_owner',          name: 'Co-Owner',               rank: 80,  color: '#ffa32e', staff: true },
   { key: 'creator',           name: 'Creator',                rank: 90,  color: '#ffd447', staff: true },
   { key: 'game_owner',        name: 'Game Owner',             rank: 100, color: '#ff4d4d', staff: true },
+  // --- website owner, above everything ---
+  { key: 'gin',               name: 'Gin',                    rank: 110, color: '#ffffff', staff: true },
 ];
+
+/**
+ * Ranks that exist outside the editable ladder. They are granted by the
+ * server environment file alone, never appear as something to assign, and
+ * are left out of the permission editor entirely.
+ */
+export const PROTECTED_ROLES = new Set(['gin', 'game_owner']);
 
 export const DEFAULT_ROLE = 'member';
 export const ROLE_KEYS = BASE_ROLES.map((r) => r.key);
@@ -145,6 +154,7 @@ export const PERMISSIONS = {
   'security.view':     70,  // rejected logins, active sessions
   'roles.rename':     100,  // Game Owner only: rename and recolour the ladder
   'roles.permissions':100,  // Game Owner only: edit this very table
+  'traffic.view':     110,  // Gin only: who is on the website right now
 };
 
 /**
@@ -153,7 +163,7 @@ export const PERMISSIONS = {
  * the permission table could grant itself everything else, so they stay
  * pinned to the Game Owner no matter what the override table says.
  */
-export const LOCKED_PERMISSIONS = new Set(['roles.permissions', 'roles.rename']);
+export const LOCKED_PERMISSIONS = new Set(['roles.permissions', 'roles.rename', 'traffic.view']);
 
 /** Labels and descriptions for the permission editor. */
 export const PERMISSION_META = {
@@ -194,6 +204,7 @@ export const PERMISSION_META = {
 
   'roles.rename':      { category: 'Owner only', label: 'Rename ranks', desc: 'Pinned to the Game Owner and not editable.' },
   'roles.permissions': { category: 'Owner only', label: 'Edit this permission table', desc: 'Pinned to the Game Owner and not editable - anything able to rewrite permissions could grant itself everything else.' },
+  'traffic.view':      { category: 'Owner only', label: 'See website traffic', desc: 'Website owner only. Not grantable.' },
 };
 
 export const PERMISSION_CATEGORIES = [
@@ -245,6 +256,7 @@ export function defaultAllows(roleKey, permission) {
 /** Turn one permission on or off for one rank. */
 export function setRolePermission(roleKey, permission, allowed, actor) {
   if (!BASE_ROLE_MAP[roleKey]) return { error: 'unknown_role' };
+  if (roleKey === 'gin') return { error: 'role_not_editable' };
   if (PERMISSIONS[permission] === undefined) return { error: 'unknown_permission' };
   if (LOCKED_PERMISSIONS.has(permission)) return { error: 'permission_locked' };
 
@@ -270,9 +282,12 @@ export function resetRolePermissions(roleKey) {
 /** The whole grid, shaped for the editor. */
 export function permissionMatrix() {
   const ov = permOverrides();
+  // Gin is the website owner's own rank: it holds everything by definition
+  // and is deliberately absent from the grid.
+  const editableRoles = ROLE_KEYS.filter((k) => k !== 'gin');
   return {
     categories: PERMISSION_CATEGORIES,
-    roles: publicRoleList(),
+    roles: publicRoleList().filter((r) => r.key !== 'gin'),
     permissions: Object.keys(PERMISSIONS).map((key) => {
       const meta = PERMISSION_META[key] || {};
       const locked = LOCKED_PERMISSIONS.has(key);
@@ -285,7 +300,7 @@ export function permissionMatrix() {
         locked,
         defaultRank: PERMISSIONS[key],
         grants: Object.fromEntries(
-          ROLE_KEYS.map((roleKey) => {
+          editableRoles.map((roleKey) => {
             const override = ov[roleKey]?.[key];
             const byDefault = defaultAllows(roleKey, key);
             const allowed = locked || override === undefined ? byDefault : override === 1;
@@ -305,7 +320,7 @@ export function permissionsFor(roleKey) {
 /** Roles `roleKey` is allowed to hand out (always strictly below itself). */
 export function assignableRoles(roleKey) {
   const r = rankOf(roleKey);
-  return BASE_ROLES.filter((x) => x.rank < r && x.key !== 'game_owner').map((x) => x.key);
+  return BASE_ROLES.filter((x) => x.rank < r && !PROTECTED_ROLES.has(x.key)).map((x) => x.key);
 }
 
 /** True when `actor` outranks `target` and may therefore act on them. */

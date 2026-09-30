@@ -29,9 +29,12 @@ function check(name, ok, extra = '') {
 // --- credentials -------------------------------------------------
 const key = createKey({ label: `smoke-test ${new Date().toISOString()}`, actor: null }).key;
 
-const owner = db.prepare("SELECT * FROM users WHERE role = 'game_owner' ORDER BY id LIMIT 1").get();
+// Gin outranks Game Owner; use whichever top account exists.
+const owner =
+  db.prepare("SELECT * FROM users WHERE role = 'gin' ORDER BY id LIMIT 1").get() ||
+  db.prepare("SELECT * FROM users WHERE role = 'game_owner' ORDER BY id LIMIT 1").get();
 if (!owner) {
-  console.error('No game_owner account exists. Run: node scripts/dev-seed.js');
+  console.error('No gin or game_owner account exists. Run: node scripts/dev-seed.js');
   process.exit(1);
 }
 const sid = crypto.randomBytes(32).toString('base64url');
@@ -71,7 +74,8 @@ console.log('Authentication');
   check('panel API rejects anonymous callers', anon.status === 401);
 
   const me = await panel('/me');
-  check('panel API accepts the session cookie', me.status === 200 && me.data.user.role === 'game_owner');
+  check('panel API accepts the session cookie',
+    me.status === 200 && ['gin', 'game_owner'].includes(me.data.user.role));
 }
 
 // --- 2. heartbeat + presence ---------------------------------------
@@ -203,7 +207,7 @@ console.log('\nOwner guardrails');
   const tooHigh = db.prepare("SELECT * FROM users WHERE role = 'co_owner' LIMIT 1").get();
   if (tooHigh) {
     const promoteToOwner = await panel(`/staff/${tooHigh.id}/role`, { role: 'game_owner' }, 'POST');
-    check('cannot hand out a role equal to your own', promoteToOwner.status === 403);
+    check('cannot hand out a protected role', promoteToOwner.status === 403);
   }
 }
 
@@ -280,7 +284,10 @@ console.log('\nWhitelist');
 // --- 10. the owner role is unreachable -----------------------------------
 console.log('\nGame Owner cannot be granted');
 {
-  const victim = db.prepare("SELECT * FROM users WHERE role != 'game_owner' ORDER BY id LIMIT 1").get();
+  // Someone who is neither the caller nor already on a protected rank.
+  const victim = db
+    .prepare("SELECT * FROM users WHERE role NOT IN ('gin', 'game_owner') AND id != ? ORDER BY id LIMIT 1")
+    .get(owner.id);
   if (!victim) {
     console.log('  SKIP  no non-owner account to test with');
   } else {
@@ -293,7 +300,7 @@ console.log('\nGame Owner cannot be granted');
       !meta.data.assignable?.includes('game_owner'));
 
     const demote = await panel(`/staff/${owner.id}/role`, { role: 'moderator' }, 'POST');
-    check('the owner cannot be demoted through the API', demote.status === 403);
+    check('the top account cannot be demoted through the API', demote.status === 403);
   }
 }
 
@@ -439,6 +446,61 @@ console.log('\nPermission editor');
   check('everything can be reset to defaults', reset.status === 200);
   const after = reset.data.matrix.permissions.find((p) => p.key === 'punish.ban.perm');
   check('defaults really are restored', after.grants.chat_mod.allowed === false);
+}
+
+// --- 14. Gin and website traffic ---------------------------------------------
+console.log('\nGin and website traffic');
+{
+  const meta = await panel('/meta');
+  const gin = meta.data.roles.find((r) => r.key === 'gin');
+  check('Gin exists in the ladder', !!gin);
+  check('Gin sits above Game Owner', gin.rank > meta.data.roles.find((r) => r.key === 'game_owner').rank);
+  check('Gin is not assignable to anyone', !meta.data.assignable?.includes('gin'));
+
+  const matrix = await panel('/permissions');
+  check('Gin has no column in the permission editor',
+    !matrix.data.roles.some((r) => r.key === 'gin'));
+
+  const editGin = await panel('/permissions', { role: 'gin', permission: 'db.view', allowed: false }, 'POST');
+  check('Gin permissions cannot be edited', editGin.status === 400 && editGin.data.error === 'role_not_editable');
+
+  const grantTraffic = await panel('/permissions', { role: 'co_owner', permission: 'traffic.view', allowed: true }, 'POST');
+  check('traffic.view cannot be granted to anyone',
+    grantTraffic.status === 400 && grantTraffic.data.error === 'permission_locked');
+
+  const promoteGin = await panel(`/staff/${owner.id}/role`, { role: 'gin' }, 'POST');
+  check('nobody can be promoted to Gin', promoteGin.status === 403);
+
+  const traffic = await panel('/traffic');
+  const ginHolder = db.prepare("SELECT 1 AS x FROM users WHERE role = 'gin'").get();
+  if (ginHolder) {
+    check('Gin can read website traffic', traffic.status === 200 && Array.isArray(traffic.data.online));
+    check('traffic reports totals', typeof traffic.data.totals?.views24h === 'number');
+
+    const profile = await panel(`/traffic/${owner.id}`);
+    check('a visitor profile loads', profile.status === 200 && profile.data.user.id === owner.id);
+    check('the profile carries sessions', Array.isArray(profile.data.sessions));
+    check('the profile carries page views', Array.isArray(profile.data.pageViews));
+    check('the profile carries their actions', Array.isArray(profile.data.actions));
+  } else {
+    console.log('  SKIP  no gin account configured (set GIN_DISCORD_ID)');
+  }
+
+  // Anyone below Gin must be refused, no matter how senior.
+  const coOwner = db.prepare("SELECT * FROM users WHERE role = 'co_owner' LIMIT 1").get();
+  if (coOwner) {
+    const sid2 = crypto.randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(sid2, coOwner.id, Date.now(), Date.now() + 3600_000, Date.now(), 'smoke-test');
+    const c2 = `zhc_sid=${sid2}.${crypto.createHmac('sha256', config.sessionSecret).update(sid2).digest('base64url')}`;
+    const denied = await fetch(`${BASE}/api/traffic`, { headers: { Cookie: c2 } });
+    check('a Co-Owner cannot see website traffic', denied.status === 403);
+    const deniedProfile = await fetch(`${BASE}/api/traffic/${owner.id}`, { headers: { Cookie: c2 } });
+    check('a Co-Owner cannot open a visitor profile', deniedProfile.status === 403);
+  }
+
+  await panel('/permissions', null, 'DELETE');
 }
 
 // --- cleanup --------------------------------------------------------------

@@ -178,8 +178,11 @@ export function auditConfiguration() {
     problems.push('SESSION_SECRET still looks like a placeholder.');
   }
 
-  if (!config.discord.ownerId) {
-    problems.push('OWNER_DISCORD_ID is not set - NOBODY can become Game Owner. Set it and restart.');
+  if (!config.discord.ownerId && !config.discord.ginId) {
+    problems.push('Neither GIN_DISCORD_ID nor OWNER_DISCORD_ID is set - nobody can hold a top rank. Set one and restart.');
+  }
+  if (config.discord.ginId && config.discord.ginId === config.discord.ownerId) {
+    warnings.push('GIN_DISCORD_ID and OWNER_DISCORD_ID are the same account, so it holds Gin and nobody holds Game Owner.');
   }
 
   if (config.isProd && !config.baseUrl.startsWith('https://')) {
@@ -204,23 +207,67 @@ export function auditConfiguration() {
  * there who would never trigger the check-on-login path.
  */
 export function enforceOwnerInvariant() {
-  const ownerId = config.discord.ownerId;
-  const holders = db.prepare("SELECT id, discord_id, discord_username FROM users WHERE role = 'game_owner'").all();
+  const { ownerId, ginId } = config.discord;
+  const holders = db
+    .prepare("SELECT id, discord_id, discord_username, role FROM users WHERE role IN ('game_owner', 'gin')")
+    .all();
 
-  const rogue = holders.filter((u) => !ownerId || u.discord_id !== ownerId);
-  for (const u of rogue) {
-    db.prepare("UPDATE users SET role = 'co_owner' WHERE id = ?").run(u.id);
-    db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+  const entitledTo = (discordId) => {
+    if (ginId && discordId === ginId) return 'gin';
+    if (ownerId && discordId === ownerId) return 'game_owner';
+    return null;
+  };
+
+  // Anyone whose stored rank disagrees with the environment file is corrected.
+  // Someone entitled to a protected rank is moved onto it; someone entitled to
+  // none is dropped to Co-Owner.
+  const wrong = holders.filter((u) => entitledTo(u.discord_id) !== u.role);
+  for (const u of wrong) {
+    const should = entitledTo(u.discord_id);
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(should ?? 'co_owner', u.id);
+
+    if (should) {
+      audit(
+        { id: null, discord_username: 'system', role: 'system' },
+        'security.owner_invariant_corrected',
+        `user:${u.id}`,
+        `${u.discord_username} moved from ${u.role} to ${should} to match the environment file`,
+        null
+      );
+      console.log(`  [i]  ${u.discord_username}: ${u.role} -> ${should} (matches the environment file)`);
+    } else {
+      // Only a genuine rogue loses its sessions.
+      db.prepare('DELETE FROM sessions WHERE user_id = ?').run(u.id);
+      audit(
+        { id: null, discord_username: 'system', role: 'system' },
+        'security.owner_invariant_demoted',
+        `user:${u.id}`,
+        `${u.discord_username} (${u.discord_id}) held ${u.role} without matching any configured Discord ID`,
+        null
+      );
+      console.log(`  [!]  Demoted rogue ${u.role}: ${u.discord_username} (${u.discord_id})`);
+    }
+  }
+
+  // Someone entitled to a protected rank who is sitting on an ordinary one
+  // (first boot after setting GIN_DISCORD_ID, say) gets moved up too.
+  for (const [discordId, wanted] of [[ginId, 'gin'], [ownerId, 'game_owner']]) {
+    if (!discordId) continue;
+    if (wanted === 'game_owner' && ginId && ginId === ownerId) continue;
+    const u = db.prepare('SELECT id, discord_username, role FROM users WHERE discord_id = ?').get(discordId);
+    if (!u || u.role === wanted) continue;
+    db.prepare('UPDATE users SET role = ? WHERE id = ?').run(wanted, u.id);
     audit(
       { id: null, discord_username: 'system', role: 'system' },
-      'security.owner_invariant_demoted',
+      'security.owner_invariant_corrected',
       `user:${u.id}`,
-      `${u.discord_username} (${u.discord_id}) held game_owner without matching OWNER_DISCORD_ID`,
+      `${u.discord_username} moved from ${u.role} to ${wanted} to match the environment file`,
       null
     );
-    console.log(`  [!]  Demoted rogue Game Owner: ${u.discord_username} (${u.discord_id})`);
+    console.log(`  [i]  ${u.discord_username}: ${u.role} -> ${wanted} (matches the environment file)`);
   }
-  return rogue.length;
+
+  return wrong.length;
 }
 
 /** Random token with a constant-time comparison helper. */

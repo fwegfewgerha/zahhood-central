@@ -5,9 +5,9 @@ import { publicUser, requireLogin, requireStaff, requirePerm, avatarUrl, clientI
 import {
   can, rankOf, role as roleInfo, publicRoleList, assignableRoles, outranks, isStaff,
   setRoleAppearance, resetRoleAppearance,
-  permissionMatrix, setRolePermission, resetRolePermissions,
+  permissionMatrix, setRolePermission, resetRolePermissions, PROTECTED_ROLES,
 } from '../roles.js';
-import { broadcast, onlineStaff } from '../realtime.js';
+import { broadcast, onlineStaff, liveVisitors } from '../realtime.js';
 import { liveSnapshot, history, reapDeadServers } from '../stats.js';
 import {
   issuePunishment,
@@ -652,14 +652,14 @@ apiRouter.post('/staff/:userId/role', requirePerm('staff.manage'), (req, res) =>
 
   if (target.id === req.user.id) return res.status(403).json({ error: 'cannot_change_own_role' });
 
-  // Game Owner is granted by OWNER_DISCORD_ID alone. No API path assigns it,
-  // and no API path takes it away either.
-  if (newRole === 'game_owner') {
-    audit(req.user, 'security.owner_grant_blocked', `user:${targetId}`, null, clientIp(req));
-    return res.status(403).json({ error: 'owner_role_is_env_only' });
+  // Gin and Game Owner come from the server environment file alone. No API
+  // path assigns either of them, and no API path takes them away either.
+  if (PROTECTED_ROLES.has(newRole)) {
+    audit(req.user, 'security.owner_grant_blocked', `user:${targetId}`, newRole, clientIp(req));
+    return res.status(403).json({ error: 'owner_role_is_env_only', role: newRole });
   }
-  if (target.role === 'game_owner') {
-    return res.status(403).json({ error: 'cannot_change_owner' });
+  if (PROTECTED_ROLES.has(target.role)) {
+    return res.status(403).json({ error: 'cannot_change_owner', role: target.role });
   }
   // You may only act on people below you, and only hand out roles below you.
   if (!outranks(req.user.role, target.role)) {
@@ -876,6 +876,202 @@ apiRouter.delete('/permissions', requirePerm('roles.permissions'), (req, res) =>
 });
 
 // ---------------------------------------------------------------
+// website traffic - Gin only
+// ---------------------------------------------------------------
+apiRouter.get('/traffic', requirePerm('traffic.view'), (req, res) => {
+  const t = now();
+  const live = liveVisitors();
+  const liveIds = new Set(live.map((v) => v.userId));
+
+  // Signed in, but no socket open right now (tab closed, panel not loaded).
+  const idle = db
+    .prepare(
+      `SELECT u.id, u.discord_id, u.discord_username, u.discord_global, u.discord_avatar, u.role,
+              MAX(s.last_used_at) AS last_used, MAX(s.created_at) AS session_started,
+              COUNT(s.id) AS sessions
+         FROM sessions s JOIN users u ON u.id = s.user_id
+        WHERE s.expires_at > ?
+        GROUP BY u.id ORDER BY last_used DESC`
+    )
+    .all(t);
+
+  const recent = db
+    .prepare(
+      `SELECT v.*, u.discord_username, u.discord_global, u.role
+         FROM page_views v LEFT JOIN users u ON u.id = v.user_id
+        ORDER BY v.id DESC LIMIT 100`
+    )
+    .all();
+
+  const dayAgo = t - 864e5;
+  return res.json({
+    at: t,
+    online: live.map(shapeVisitor),
+    idle: idle
+      .filter((u) => !liveIds.has(u.id))
+      .map((u) => ({
+        userId: u.id,
+        discordId: u.discord_id,
+        username: u.discord_global || u.discord_username,
+        handle: u.discord_username,
+        role: u.role,
+        roleName: roleInfo(u.role).name,
+        roleColor: roleInfo(u.role).color,
+        avatar: avatarUrl(u),
+        sessions: u.sessions,
+        lastSeen: u.last_used,
+        sessionStarted: u.session_started,
+      })),
+    totals: {
+      onlineNow: live.length,
+      signedIn: idle.length,
+      views24h: db.prepare('SELECT COUNT(*) AS n FROM page_views WHERE created_at > ?').get(dayAgo).n,
+      visitors24h: db
+        .prepare('SELECT COUNT(DISTINCT user_id) AS n FROM page_views WHERE created_at > ?')
+        .get(dayAgo).n,
+    },
+    topPages: db
+      .prepare(
+        `SELECT path, COUNT(*) AS views, COUNT(DISTINCT user_id) AS people
+           FROM page_views WHERE created_at > ?
+          GROUP BY path ORDER BY views DESC LIMIT 12`
+      )
+      .all(dayAgo),
+    recent: recent.map((v) => ({
+      id: v.id,
+      userId: v.user_id,
+      username: v.discord_global || v.discord_username,
+      role: v.role,
+      path: v.path,
+      ip: v.ip,
+      at: v.created_at,
+    })),
+  });
+});
+
+function shapeVisitor(v) {
+  const r = roleInfo(v.role);
+  return {
+    ...v,
+    roleName: r.name,
+    roleColor: r.color,
+    device: describeAgent(v.userAgent),
+  };
+}
+
+/** Everything the site knows about one signed-in person. */
+apiRouter.get('/traffic/:userId', requirePerm('traffic.view'), (req, res) => {
+  const id = int(req.params.userId);
+  const u = db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+  if (!u) return res.status(404).json({ error: 'user_not_found' });
+
+  const t = now();
+  const live = liveVisitors().find((v) => v.userId === id) || null;
+
+  const views = db
+    .prepare('SELECT * FROM page_views WHERE user_id = ? ORDER BY id DESC LIMIT 300')
+    .all(id);
+
+  const sessions = db
+    .prepare('SELECT * FROM sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50')
+    .all(id);
+
+  const actions = db
+    .prepare('SELECT * FROM audit_log WHERE actor_id = ? ORDER BY id DESC LIMIT 200')
+    .all(id);
+
+  const rejected = db
+    .prepare('SELECT * FROM login_attempts WHERE discord_id = ? ORDER BY id DESC LIMIT 50')
+    .all(u.discord_id);
+
+  const ips = db
+    .prepare(
+      `SELECT ip, COUNT(*) AS hits, MIN(created_at) AS first_at, MAX(created_at) AS last_at
+         FROM page_views WHERE user_id = ? AND ip IS NOT NULL
+        GROUP BY ip ORDER BY last_at DESC LIMIT 25`
+    )
+    .all(id);
+
+  const devices = db
+    .prepare(
+      `SELECT user_agent, COUNT(*) AS hits, MAX(created_at) AS last_at
+         FROM page_views WHERE user_id = ? AND user_agent IS NOT NULL
+        GROUP BY user_agent ORDER BY last_at DESC LIMIT 15`
+    )
+    .all(id);
+
+  res.json({
+    user: {
+      ...publicUser(u),
+      status: u.status,
+      createdAt: u.created_at,
+      lastLogin: u.last_login_at,
+      lastSeen: u.last_seen_at,
+      whitelisted: !!db.prepare('SELECT 1 AS x FROM whitelist WHERE discord_id = ?').get(u.discord_id),
+    },
+    online: live ? shapeVisitor(live) : null,
+    totals: {
+      views: db.prepare('SELECT COUNT(*) AS n FROM page_views WHERE user_id = ?').get(id).n,
+      actions: db.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE actor_id = ?').get(id).n,
+      messages: db.prepare('SELECT COUNT(*) AS n FROM chat_messages WHERE user_id = ?').get(id).n,
+      punishments: db.prepare('SELECT COUNT(*) AS n FROM punishments WHERE issued_by = ?').get(id).n,
+      activeSessions: db
+        .prepare('SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND expires_at > ?')
+        .get(id, t).n,
+    },
+    pageViews: views.map((v) => ({ id: v.id, path: v.path, ip: v.ip, at: v.created_at })),
+    sessions: sessions.map((s) => ({
+      id: s.id.slice(0, 8),
+      ip: s.ip,
+      device: describeAgent(s.user_agent),
+      userAgent: s.user_agent,
+      createdAt: s.created_at,
+      lastUsed: s.last_used_at,
+      expiresAt: s.expires_at,
+      active: s.expires_at > t,
+      isCurrent: live?.sessionId === s.id.slice(0, 8),
+    })),
+    actions: actions.map((a) => ({
+      id: a.id,
+      action: a.action,
+      target: a.target,
+      detail: a.detail,
+      ip: a.ip,
+      at: a.created_at,
+    })),
+    rejectedLogins: rejected.map((r) => ({ reason: r.reason, ip: r.ip, at: r.created_at })),
+    addresses: ips.map((r) => ({ ip: r.ip, hits: r.hits, firstAt: r.first_at, lastAt: r.last_at })),
+    devices: devices.map((d) => ({
+      device: describeAgent(d.user_agent),
+      userAgent: d.user_agent,
+      hits: d.hits,
+      lastAt: d.last_at,
+    })),
+  });
+});
+
+function describeAgent(ua) {
+  if (!ua) return 'unknown';
+  const browser =
+    /Edg\//.test(ua) ? 'Edge'
+      : /OPR\//.test(ua) ? 'Opera'
+      : /Firefox\//.test(ua) ? 'Firefox'
+      : /Chrome\//.test(ua) ? 'Chrome'
+      : /Safari\//.test(ua) ? 'Safari'
+      : 'Browser';
+  const os =
+    /Windows NT 10/.test(ua) ? 'Windows'
+      : /Windows/.test(ua) ? 'Windows'
+      : /Android/.test(ua) ? 'Android'
+      : /iPhone|iPad/.test(ua) ? 'iOS'
+      : /Mac OS X/.test(ua) ? 'macOS'
+      : /Linux/.test(ua) ? 'Linux'
+      : '';
+  const mobile = /Mobile|Android|iPhone/.test(ua) ? ' (mobile)' : '';
+  return `${browser}${os ? ` on ${os}` : ''}${mobile}`;
+}
+
+// ---------------------------------------------------------------
 // security overview
 // ---------------------------------------------------------------
 apiRouter.get('/security', requirePerm('security.view'), (req, res) => {
@@ -921,7 +1117,7 @@ apiRouter.get('/security', requirePerm('security.view'), (req, res) => {
       role: s.role,
       roleName: roleInfo(s.role).name,
       ip: s.ip,
-      device: shortenAgent(s.user_agent),
+      device: describeAgent(s.user_agent),
       createdAt: s.created_at,
       lastUsed: s.last_used_at,
       isYou: s.id === req.user.sid,
@@ -940,16 +1136,6 @@ apiRouter.post('/security/sessions/revoke', requirePerm('staff.remove'), (req, r
   audit(req.user, 'security.sessions_revoked', `user:${userId}`, `${info.changes} session(s)`, clientIp(req));
   res.json({ ok: true, revoked: info.changes });
 });
-
-function shortenAgent(ua) {
-  if (!ua) return 'unknown';
-  if (/Edg\//.test(ua)) return 'Edge';
-  if (/OPR\//.test(ua)) return 'Opera';
-  if (/Chrome\//.test(ua)) return 'Chrome';
-  if (/Firefox\//.test(ua)) return 'Firefox';
-  if (/Safari\//.test(ua)) return 'Safari';
-  return ua.slice(0, 40);
-}
 
 // ---------------------------------------------------------------
 // audit log

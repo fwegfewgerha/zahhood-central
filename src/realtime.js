@@ -1,6 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { userFromRequest, publicUser } from './auth.js';
 import { isStaff, rankOf } from './roles.js';
+import { db } from './db.js';
 
 let wss = null;
 const clients = new Set();
@@ -30,6 +31,13 @@ export function initRealtime(server) {
       ws.user = user;
       ws.rank = rankOf(user.role);
       ws.isAlive = true;
+      ws.connectedAt = Date.now();
+      ws.lastSeen = ws.connectedAt;
+      ws.sessionId = user.sid;
+      ws.ip = ipOf(req);
+      ws.userAgent = req.headers['user-agent'] || null;
+      ws.route = '#/';
+      ws.routeAt = ws.connectedAt;
       wss.emit('connection', ws, req);
     });
   });
@@ -46,7 +54,18 @@ export function initRealtime(server) {
       } catch {
         return;
       }
-      if (msg.type === 'ping') send(ws, { type: 'pong', t: Date.now() });
+      if (msg.type === 'ping') {
+        ws.lastSeen = Date.now();
+        send(ws, { type: 'pong', t: Date.now() });
+      }
+      // The panel reports which page it is on so the traffic view can
+      // show where each person currently is.
+      if (msg.type === 'route' && typeof msg.path === 'string') {
+        ws.route = msg.path.slice(0, 120);
+        ws.routeAt = Date.now();
+        ws.lastSeen = ws.routeAt;
+        recordPageView(ws, ws.route);
+      }
     });
     ws.on('close', () => {
       clients.delete(ws);
@@ -56,6 +75,7 @@ export function initRealtime(server) {
       clients.delete(ws);
     });
 
+    recordPageView(ws, '#/');
     send(ws, { type: 'hello', user: publicUser(ws.user), t: Date.now() });
     broadcastPresence();
   });
@@ -78,6 +98,53 @@ export function initRealtime(server) {
   heartbeat.unref?.();
 
   return wss;
+}
+
+function ipOf(req) {
+  const fwd = req.headers['x-forwarded-for'];
+  if (typeof fwd === 'string' && fwd.length) return fwd.split(',')[0].trim();
+  return req.socket?.remoteAddress || null;
+}
+
+/** One row per page a signed-in person opens. Skips repeats of the same page. */
+function recordPageView(ws, path) {
+  if (ws.lastLoggedRoute === path) return;
+  ws.lastLoggedRoute = path;
+  try {
+    db.prepare(
+      `INSERT INTO page_views (user_id, session_id, path, ip, user_agent, created_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(ws.user.id, ws.sessionId ?? null, path, ws.ip, ws.userAgent, Date.now());
+  } catch {
+    // Traffic logging must never break the socket.
+  }
+}
+
+/**
+ * Everyone currently connected to the website, with what they are doing.
+ * Only ever served to the `traffic.view` permission.
+ */
+export function liveVisitors() {
+  const out = [];
+  for (const ws of clients) {
+    if (ws.readyState !== ws.OPEN) continue;
+    out.push({
+      userId: ws.user.id,
+      discordId: ws.user.discord_id,
+      username: ws.user.discord_global || ws.user.discord_username,
+      handle: ws.user.discord_username,
+      role: ws.user.role,
+      avatar: publicUser(ws.user).avatar,
+      ip: ws.ip,
+      userAgent: ws.userAgent,
+      sessionId: ws.sessionId ? String(ws.sessionId).slice(0, 8) : null,
+      connectedAt: ws.connectedAt,
+      lastSeen: ws.lastSeen,
+      route: ws.route,
+      routeAt: ws.routeAt,
+    });
+  }
+  return out.sort((a, b) => b.connectedAt - a.connectedAt);
 }
 
 function send(ws, payload) {

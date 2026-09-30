@@ -272,6 +272,19 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   PRIMARY KEY (role_key, permission)
 );
 
+-- Website traffic: which pages signed-in people opened, and when.
+CREATE TABLE IF NOT EXISTS page_views (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id    INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  session_id TEXT,
+  path       TEXT NOT NULL,
+  ip         TEXT,
+  user_agent TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_views_user ON page_views(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_views_time ON page_views(created_at DESC);
+
 -- Every rejected sign-in, for rate limiting and forensics.
 CREATE TABLE IF NOT EXISTS login_attempts (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
