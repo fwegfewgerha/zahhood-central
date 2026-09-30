@@ -21,6 +21,7 @@ const BASE_ROLES = [
   { key: 'head_admin',        name: 'Head Administrator',     rank: 60,  color: '#e05ac0', staff: true },
   { key: 'community_manager', name: 'Community Manager',      rank: 65,  color: '#ef5b8c', staff: true },
   { key: 'owner_assistant',   name: 'Owner Assistant',        rank: 70,  color: '#f2724b', staff: true },
+  { key: 'dev',               name: 'Developer',              rank: 75,  color: '#2ee6c8', staff: true },
   // --- the only three above Owner Assistant ---
   { key: 'co_owner',          name: 'Co-Owner',               rank: 80,  color: '#ffa32e', staff: true },
   { key: 'creator',           name: 'Creator',                rank: 90,  color: '#ffd447', staff: true },
@@ -170,6 +171,32 @@ export const PERMISSIONS = {
  */
 export const LOCKED_PERMISSIONS = new Set(['roles.permissions', 'roles.rename', 'traffic.view']);
 
+/**
+ * Per-role starting points that differ from what the rank alone would give.
+ *
+ * The ladder assumes power grows with rank, which holds for moderation but
+ * not for a Developer: they sit high so that nobody below can punish or
+ * demote them, yet building the game needs the API keys and nothing to do
+ * with authority over people. Rather than bend the ladder, the role starts
+ * with an explicit set and the owner can change any of it in the editor.
+ */
+export const ROLE_PERMISSION_DEFAULTS = {
+  dev: {
+    // The reason the role exists: wiring the game to the site.
+    'apikeys.view': true,
+    'apikeys.manage': true,
+
+    // Authority over people is not a developer's job.
+    'staff.manage': false,
+    'staff.remove': false,
+    'whitelist.view': false,
+    'whitelist.manage': false,
+    'security.view': false,
+    'punish.ban.perm': false,
+    'appeals.review': false,
+  },
+};
+
 /** Labels and descriptions for the permission editor. */
 export const PERMISSION_META = {
   'panel.access':      { category: 'Access', label: 'Open the staff panel', desc: 'Without this the account only ever sees the landing page.' },
@@ -254,6 +281,10 @@ export function can(roleKey, permission) {
 
   const override = permOverrides()[roleKey]?.[permission];
   if (override !== undefined) return override === 1;
+
+  const roleDefault = ROLE_PERMISSION_DEFAULTS[roleKey]?.[permission];
+  if (roleDefault !== undefined) return roleDefault;
+
   return rankOf(roleKey) >= need;
 }
 
@@ -261,6 +292,8 @@ export function can(roleKey, permission) {
 export function defaultAllows(roleKey, permission) {
   const need = PERMISSIONS[permission];
   if (need === undefined) return false;
+  const roleDefault = ROLE_PERMISSION_DEFAULTS[roleKey]?.[permission];
+  if (roleDefault !== undefined) return roleDefault;
   return rankOf(roleKey) >= need;
 }
 

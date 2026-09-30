@@ -382,7 +382,11 @@ console.log('\nPermission editor');
 
   const matrix = await panel('/permissions');
   check('the matrix loads', matrix.status === 200 && matrix.data.permissions.length > 20);
-  check('every rank has a column', matrix.data.roles.length === 14);
+  // Derived rather than hard-coded, so adding a rank does not fail this.
+  const { publicRoleList } = await import('../src/roles.js');
+  const editable = publicRoleList().filter((r) => r.key !== 'gin');
+  check('every rank except Gin has a column',
+    matrix.data.roles.length === editable.length && editable.length > 1);
 
   const banPerm = matrix.data.permissions.find((p) => p.key === 'punish.ban.perm');
   check('chat mod cannot permanently ban by default', banPerm.grants.chat_mod.allowed === false);
@@ -841,6 +845,52 @@ console.log('\nMute record retention');
   db.prepare('DELETE FROM chat_mutes WHERE discord_id = ?').run(TARGET);
   db.prepare('DELETE FROM mute_evidence WHERE id IN (?, ?)').run(oldEv, newEv);
   setSetting('evidence_retention_days', '90', null);
+}
+
+// --- 20. the Developer role ---------------------------------------------------
+// A Developer sits high so nobody below can punish or demote them, but the
+// role is technical: it gets the game keys and no authority over people.
+console.log('\nDeveloper role');
+{
+  const { can, rankOf, outranks, assignableRoles } = await import('../src/roles.js');
+
+  check('Developer sits between Owner Assistant and Co-Owner',
+    rankOf('dev') > rankOf('owner_assistant') && rankOf('dev') < rankOf('co_owner'));
+  check('Developer outranks every moderation rank', outranks('dev', 'head_admin'));
+  check('Co-Owner still outranks a Developer', outranks('co_owner', 'dev'));
+
+  check('a Developer can manage the game keys', can('dev', 'apikeys.manage'));
+  check('a Developer can see live servers', can('dev', 'servers.view'));
+  check('a Developer can read the audit log', can('dev', 'audit.view'));
+
+  // The point of the role defaults: rank alone would have granted these.
+  check('rank alone would have granted staff.manage', rankOf('dev') >= 70);
+  check('but a Developer cannot promote or demote', !can('dev', 'staff.manage'));
+  check('a Developer cannot suspend staff', !can('dev', 'staff.remove'));
+  check('a Developer cannot edit the whitelist', !can('dev', 'whitelist.manage'));
+  check('a Developer cannot permanently ban', !can('dev', 'punish.ban.perm'));
+
+  check('Co-Owner can appoint a Developer', assignableRoles('co_owner').includes('dev'));
+  check('Owner Assistant cannot appoint a Developer',
+    !assignableRoles('owner_assistant').includes('dev'));
+
+  // The role is ordinary, so the owner can still change any of it.
+  const matrix = await panel('/permissions');
+  check('Developer appears in the permission editor',
+    matrix.data.roles.some((r) => r.key === 'dev'));
+  const staffManage = matrix.data.permissions.find((p) => p.key === 'staff.manage');
+  check('its withheld permissions do not read as owner edits',
+    staffManage.grants.dev.allowed === false && staffManage.grants.dev.overridden === false);
+
+  const grant = await panel('/permissions', { role: 'dev', permission: 'staff.manage', allowed: true }, 'POST');
+  check('the owner can still grant it if they want', grant.status === 200);
+  const after = grant.data.matrix.permissions.find((p) => p.key === 'staff.manage');
+  check('and that now reads as a change from default', after.grants.dev.overridden === true);
+  await panel('/permissions?role=dev', null, 'DELETE');
+
+  const back = await panel('/permissions');
+  check('resetting returns it to the role default',
+    back.data.permissions.find((p) => p.key === 'staff.manage').grants.dev.allowed === false);
 }
 
 // --- cleanup --------------------------------------------------------------
