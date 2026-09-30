@@ -21,17 +21,28 @@ without touching Discord or signing anybody out.
 
 ```json
 {
-  "owner": {
-    "username": "YOUR_GITHUB_USERNAME",
-    "email": "YOUR_EMAIL"
-  },
-  "record": {
-    "CNAME": "zahhood-central.onrender.com"
-  }
+    "owner": {
+        "username": "YOUR_GITHUB_USERNAME"
+    },
+    "records": {
+        "CNAME": "zahhood-central.onrender.com"
+    }
 }
 ```
 
-3. Open a pull request. Usually merged within a day or two.
+Note `records`, plural. The CNAME target is your Render hostname, so create
+the Render service first (step 4) and come back for this.
+
+3. Open a pull request, filling in their template rather than replacing it.
+   They ask for a link to the site and a screenshot. Usually merged within a
+   day or two.
+
+**Eligibility, honestly:** is-a.dev is for non-commercial, software-related
+projects, and they want to see a site that is not blank. This panel is behind
+a Discord login, so a reviewer only sees the landing page. Screenshot the
+landing page *and* a signed-in view of the dashboard so they can see it is a
+real project. If they decline, buy `zahhood.dev` for about $10/yr instead -
+everything else in this guide is unchanged.
 
 `zahhood.is-a.dev` was free when this was written. If it has gone, try
 `zah-hood`, `zahhoodcentral` or `zahhood-central`.
