@@ -238,7 +238,6 @@ export async function accessView(view) {
             el('div', {}, el('b', {}, r.username || '—')),
             el('div', { class: 'mono muted', style: { fontSize: '11px' } }, r.discordId || '')),
           el('td', {}, el('span', { class: `pill ${pill}` }, label)),
-          el('td', { class: 'mono muted', style: { fontSize: '11px' } }, r.ip || '—'),
           el('td', { class: 'muted nowrap right' }, timeAgo(r.at))));
       }
       t.append(tb);

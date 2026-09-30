@@ -1102,11 +1102,12 @@ apiRouter.get('/security', requirePerm('security.view'), (req, res) => {
     rejected24h: db
       .prepare('SELECT COUNT(*) AS n FROM login_attempts WHERE created_at > ?')
       .get(dayAgo).n,
+    // The IP is deliberately not sent. It stays in the database because the
+    // login throttle counts rejections per address, but nothing displays it.
     rejectedLogins: rejected.map((r) => ({
       id: r.id,
       discordId: r.discord_id,
       username: r.username,
-      ip: r.ip,
       reason: r.reason,
       at: r.created_at,
     })),
