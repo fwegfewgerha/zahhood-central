@@ -84,7 +84,9 @@ authRouter.get('/discord/callback', async (req, res) => {
     res.redirect(st.returnTo || '/panel');
   } catch (err) {
     console.error('[auth] callback failed:', err.message);
-    fail(res, 'oauth_failed');
+    // Pass the specific reason through when we have one, so the landing page
+    // can say what actually happened instead of "something went wrong".
+    fail(res, err.code || 'oauth_failed', err.retryAfter ? String(Math.ceil(err.retryAfter)) : null);
   }
 });
 

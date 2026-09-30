@@ -53,6 +53,8 @@
     access_denied: 'You cancelled the Discord login.',
     not_whitelisted: 'Your Discord account is not on the whitelist for this site. Ask an owner to add your Discord user ID.',
     too_many_attempts: 'Too many failed sign-in attempts from your connection. Wait 15 minutes and try again.',
+    discord_rate_limited: 'Discord is temporarily rate-limiting this app and will not issue a login token. Nothing is wrong with your account - wait a few minutes and try again.',
+    code_already_used: 'That login link was already used. Start the sign-in again from this page rather than refreshing.',
   };
   const params = new URLSearchParams(location.search);
   const err = params.get('error');
@@ -60,7 +62,12 @@
     const slot = document.getElementById('error-slot');
     const div = document.createElement('div');
     div.className = 'alert';
-    div.textContent = MESSAGES[err] || `Login failed: ${err}`;
+    const detail = params.get('detail');
+    let text = MESSAGES[err] || `Login failed: ${err}`;
+    if (err === 'discord_rate_limited' && detail && Number(detail) > 0) {
+      text += ` Discord suggests waiting about ${detail} seconds.`;
+    }
+    div.textContent = text;
     slot.appendChild(div);
   }
 </script>

@@ -245,7 +245,30 @@ export async function exchangeCode(code) {
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
   });
-  if (!res.ok) throw new Error(`discord token exchange failed (${res.status}): ${await res.text()}`);
+
+  if (!res.ok) {
+    const text = await res.text();
+    const err = new Error(`discord token exchange failed (${res.status}): ${text}`);
+
+    // Discord throttles this endpoint per application. It is a temporary
+    // condition and has nothing to do with the person signing in, so it
+    // deserves its own message rather than a generic failure.
+    if (res.status === 429 || /rate limit/i.test(text)) {
+      err.code = 'discord_rate_limited';
+      let retryAfter = null;
+      try {
+        retryAfter = JSON.parse(text).retry_after ?? null;
+      } catch {
+        /* body was not JSON */
+      }
+      err.retryAfter = retryAfter;
+    } else if (/invalid_grant/i.test(text)) {
+      // A reused or expired authorization code, usually a refreshed callback.
+      err.code = 'code_already_used';
+    }
+    throw err;
+  }
+
   return res.json();
 }
 
