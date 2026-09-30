@@ -6,6 +6,7 @@ import { attachUser } from './auth.js';
 import { isStaff } from './roles.js';
 import { authRouter } from './routes/auth.js';
 import { appealRouter } from './routes/appeal.js';
+import { linkRouter } from './routes/link.js';
 import { apiRouter } from './routes/api.js';
 import { gameRouter } from './routes/game.js';
 import { initRealtime } from './realtime.js';
@@ -48,6 +49,7 @@ const gameLimiter = rateLimit({
 // ---- routes ----
 app.use('/auth', loginLimiter, authRouter);
 app.use('/api/game', gameLimiter, gameRouter); // Roblox -> site (API key auth, no cookies)
+app.use('/api/link', panelLimiter, requireSameOrigin, linkRouter); // Roblox proof, any signed-in user
 app.use('/api/appeal', panelLimiter, requireSameOrigin, appealRouter); // any logged-in user
 app.use('/api', panelLimiter, requireSameOrigin, apiRouter); // panel (Discord session auth)
 

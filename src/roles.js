@@ -144,6 +144,7 @@ export const PERMISSIONS = {
   'audit.view':        40,
   'appeals.review':    30,  // accept or deny
   'appeals.chat':      20,  // read and reply in the appeal conversation
+  'appeals.claim':     20,  // take a ticket, which lets the appellant speak
   'staff.view':        10,
   'chatmod.view':      10,  // the chat moderation section
   'chatmod.mute':      10,  // time someone out in the Discord server
@@ -217,6 +218,7 @@ export const PERMISSION_META = {
   'punish.viewAll':    { category: 'Moderation', label: 'See all casework', desc: 'Without this they only see punishments they issued themselves.' },
   'appeals.review':    { category: 'Moderation', label: 'Rule on ban appeals', desc: 'Accept or deny appeals from banned players.' },
   'appeals.chat':      { category: 'Moderation', label: 'Talk to appellants', desc: 'Read and reply in the appeal conversation. Moderator and above by default.' },
+  'appeals.claim':     { category: 'Moderation', label: 'Claim appeal tickets', desc: 'Take responsibility for a ticket. An appellant cannot reply until somebody has.' },
 
   'chat.read':         { category: 'Staff chat', label: 'Read staff chat', desc: 'Individual rooms are still gated by rank on top of this.' },
   'chat.write':        { category: 'Staff chat', label: 'Post in staff chat' },

@@ -673,3 +673,9 @@ label.field > span { display: block; font-size: 11.5px; color: var(--text-dim); 
 
 /* The upload button is the only way in on a phone, so it is full width. */
 .shot-upload { width: 100%; justify-content: center; }
+
+.appeal-waiting {
+  margin-top: 14px; padding: 12px 14px; border-radius: 9px;
+  background: rgba(255,200,87,.09); border: 1px solid rgba(255,200,87,.28);
+  color: #ffe0a0; font-size: 12.5px; line-height: 1.6;
+}

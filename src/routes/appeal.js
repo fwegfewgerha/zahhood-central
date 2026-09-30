@@ -69,6 +69,12 @@ function shapeForPlayer(a) {
     response: a.response,
     robloxId: a.roblox_id,
     username: a.roblox_username,
+    claimed: !!a.claimed_by,
+    claimedAt: a.claimed_at,
+    // The appellant is told a rank has it, never who.
+    claimedByRole: a.claimed_by_role ? roleInfo(a.claimed_by_role).name : null,
+    // A ban recorded with no reason or clip cannot be explained yet.
+    awaitingDetails: !!ban && (!ban.evidence || !ban.reason),
     ban: ban
       ? {
           reason: ban.reason,
@@ -262,6 +268,17 @@ appealRouter.post('/start', writeLimit, async (req, res) => {
      VALUES (?, 'player', ?, ?, ?, ?)`
   ).run(appealId, req.user.id, ban.username, body, t);
 
+  db.prepare(
+    `INSERT INTO appeal_messages (appeal_id, author_type, body, created_at)
+     VALUES (?, 'system', ?, ?)`
+  ).run(
+    appealId,
+    !ban.evidence || !ban.reason
+      ? 'This ban has no reason or clip recorded yet. Wait for a moderator to claim the ticket and look into it.'
+      : 'Waiting for a moderator to claim this ticket. You will be able to reply once somebody has.',
+    t
+  );
+
   audit(req.user, 'appeal.opened', `player:${robloxId}`, `appeal:${appealId}`, clientIp(req));
   broadcast({ type: 'appeal_opened', id: appealId, username: ban.username }, 20);
 
@@ -281,6 +298,10 @@ appealRouter.post('/mine/message', writeLimit, (req, res) => {
   const a = myAppeal(req.user);
   if (!a) return res.status(404).json({ error: 'appeal_not_found' });
   if (a.status !== 'pending') return res.status(409).json({ error: 'appeal_closed' });
+
+  // Nobody is listening until a moderator takes the ticket, so the form is
+  // closed rather than letting them talk into an empty room.
+  if (!a.claimed_by) return res.status(409).json({ error: 'awaiting_claim' });
 
   const body = text(req.body?.body, 2000);
   if (!body) return res.status(400).json({ error: 'body_required' });

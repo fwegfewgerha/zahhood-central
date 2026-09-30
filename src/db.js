@@ -412,6 +412,10 @@ addColumnIfMissing('users', 'roblox_verify_code', 'TEXT');
 addColumnIfMissing('users', 'roblox_verify_target', 'INTEGER');
 addColumnIfMissing('users', 'roblox_verify_expires', 'INTEGER');
 addColumnIfMissing('chat_mutes', 'evidence_id', 'INTEGER');
+addColumnIfMissing('appeals', 'claimed_by', 'INTEGER');
+addColumnIfMissing('appeals', 'claimed_by_name', 'TEXT');
+addColumnIfMissing('appeals', 'claimed_by_role', 'TEXT');
+addColumnIfMissing('appeals', 'claimed_at', 'INTEGER');
 
 // The whitelist is ON out of the box: a fresh install lets nobody in except
 // the configured OWNER_DISCORD_ID until that owner adds people by hand.
@@ -426,6 +430,9 @@ const DEFAULT_SETTINGS = {
   // Screenshots are dropped after this many days to keep the database small.
   // The mute itself is never deleted - somebody's record has to follow them.
   evidence_retention_days: '90',
+  // Staff must prove a Roblox account before using the panel, so every
+  // punishment traces back to a real person rather than a Discord handle.
+  require_staff_roblox: '1',
 };
 const settingInsert = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
 for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {

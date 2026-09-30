@@ -22,7 +22,8 @@ import {
 } from '../moderation.js';
 import { createKey, listKeys, revokeKey } from '../apikeys.js';
 import { auditConfiguration } from '../security.js';
-import { ownerOf } from '../roblox.js';
+import { ownerOf, linkedAccounts } from '../roblox.js';
+import { staffLinkRequired } from './link.js';
 import {
   botConfigured, botProblem, botSelfCheck, getMember, searchMembers, shapeMember,
   muteMember, unmuteMember, explainDiscordError, MAX_TIMEOUT_MS, botInviteUrl,
@@ -46,11 +47,17 @@ export function headshot(robloxId) {
 // ---------------------------------------------------------------
 apiRouter.get('/me', (req, res) => {
   if (!req.user) return res.status(401).json({ error: 'not_authenticated', login: '/auth/discord' });
+  const accounts = linkedAccounts(req.user);
+  const staff = isStaff(req.user.role);
   res.json({
     user: publicUser(req.user),
     site: SITE,
     suspended: !!req.user.suspended,
-    staff: isStaff(req.user.role),
+    staff,
+    robloxAccounts: accounts,
+    // Staff prove a Roblox account once, on their first visit, so a
+    // punishment can always be traced to a person rather than a handle.
+    needsRobloxLink: staff && staffLinkRequired() && accounts.length === 0,
   });
 });
 
@@ -87,6 +94,20 @@ apiRouter.post('/me/roblox', requireLogin, (req, res) => {
 
 // Everything past this point is staff-only.
 apiRouter.use(requireStaff);
+
+/**
+ * An unverified staff member gets no further. The screen that walks them
+ * through it lives on /api/link, which sits outside this router, so nobody
+ * can be gated into a dead end.
+ */
+apiRouter.use((req, res, next) => {
+  if (!staffLinkRequired()) return next();
+  if (linkedAccounts(req.user).length) return next();
+  return res.status(403).json({
+    error: 'roblox_verification_required',
+    detail: 'Prove which Roblox account is yours before using the panel.',
+  });
+});
 
 // ---------------------------------------------------------------
 // live stats
@@ -415,6 +436,12 @@ apiRouter.get('/appeals', requirePerm('appeals.review'), (req, res) => {
       handledBy: a.handled_by_name,
       response: a.response,
       evidence: a.evidence,
+      claimedBy: a.claimed_by_name,
+      claimedById: a.claimed_by,
+      claimedAt: a.claimed_at,
+      // A ban with no reason or clip recorded needs a human before the
+      // appellant can be told anything useful.
+      incomplete: !a.evidence || !a.ban_reason,
       messages: db.prepare('SELECT COUNT(*) AS n FROM appeal_messages WHERE appeal_id = ?').get(a.id).n,
       unreadFromPlayer: db
         .prepare("SELECT COUNT(*) AS n FROM appeal_messages WHERE appeal_id = ? AND author_type = 'player'")
@@ -447,6 +474,11 @@ apiRouter.get('/appeals/:id/messages', requirePerm('appeals.chat'), (req, res) =
       discordId: appeal.discord_id,
       createdAt: appeal.created_at,
       closedAt: appeal.closed_at,
+      claimedBy: appeal.claimed_by_name,
+      claimedById: appeal.claimed_by,
+      claimedByRole: appeal.claimed_by_role,
+      claimedByRoleName: appeal.claimed_by_role ? roleInfo(appeal.claimed_by_role).name : null,
+      claimedAt: appeal.claimed_at,
       handledBy: appeal.handled_by_name,
       response: appeal.response,
       ban: {
@@ -473,6 +505,61 @@ apiRouter.get('/appeals/:id/messages', requirePerm('appeals.chat'), (req, res) =
       };
     }),
   });
+});
+
+/**
+ * Take responsibility for a ticket.
+ *
+ * Until somebody claims it the appellant cannot reply - they are told to
+ * wait rather than talking into an empty room. Claiming also makes it
+ * obvious to the rest of the team who is handling it.
+ */
+apiRouter.post('/appeals/:id/claim', requirePerm('appeals.claim'), (req, res) => {
+  const id = int(req.params.id);
+  const appeal = db.prepare('SELECT * FROM appeals WHERE id = ?').get(id);
+  if (!appeal) return res.status(404).json({ error: 'not_found' });
+  if (appeal.status !== 'pending') return res.status(409).json({ error: 'appeal_closed' });
+  if (appeal.claimed_by && appeal.claimed_by !== req.user.id) {
+    return res.status(409).json({ error: 'already_claimed', by: appeal.claimed_by_name });
+  }
+
+  const t = now();
+  db.prepare('UPDATE appeals SET claimed_by = ?, claimed_by_name = ?, claimed_by_role = ?, claimed_at = ? WHERE id = ?')
+    .run(req.user.id, req.user.discord_username, req.user.role, t, id);
+
+  db.prepare(
+    `INSERT INTO appeal_messages (appeal_id, author_type, body, created_at)
+     VALUES (?, 'system', ?, ?)`
+  ).run(id, `Claimed by a ${roleInfo(req.user.role).name}. You can reply now.`, t);
+
+  audit(req.user, 'appeal.claim', `appeal:${id}`, null, clientIp(req));
+  broadcast({ type: 'appeal_claimed', id, by: req.user.discord_username }, 20);
+  res.json({ ok: true });
+});
+
+/** Put it back in the queue for somebody else. */
+apiRouter.post('/appeals/:id/release', requirePerm('appeals.claim'), (req, res) => {
+  const id = int(req.params.id);
+  const appeal = db.prepare('SELECT * FROM appeals WHERE id = ?').get(id);
+  if (!appeal) return res.status(404).json({ error: 'not_found' });
+  if (!appeal.claimed_by) return res.status(409).json({ error: 'not_claimed' });
+
+  // Only the holder may hand it back, unless you outrank them.
+  if (appeal.claimed_by !== req.user.id && !outranks(req.user.role, appeal.claimed_by_role || 'member')) {
+    return res.status(403).json({ error: 'claimed_by_someone_else', by: appeal.claimed_by_name });
+  }
+
+  const t = now();
+  db.prepare('UPDATE appeals SET claimed_by = NULL, claimed_by_name = NULL, claimed_by_role = NULL, claimed_at = NULL WHERE id = ?')
+    .run(id);
+  db.prepare(
+    `INSERT INTO appeal_messages (appeal_id, author_type, body, created_at)
+     VALUES (?, 'system', 'The ticket was released and is waiting to be claimed again.', ?)`
+  ).run(id, t);
+
+  audit(req.user, 'appeal.release', `appeal:${id}`, null, clientIp(req));
+  broadcast({ type: 'appeal_released', id }, 20);
+  res.json({ ok: true });
 });
 
 apiRouter.post('/appeals/:id/messages', requirePerm('appeals.chat'), (req, res) => {

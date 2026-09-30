@@ -634,7 +634,12 @@ export async function appealsView(view) {
               el('b', {}, el('a', { href: `#/player/${a.robloxId}` }, a.username || a.robloxId)),
               el('span', {}, `appealed ${timeAgo(a.createdAt)}`))),
           el('div', { class: 'spacer' }),
-          el('span', { class: a.status === 'pending' ? 'pill warnp' : a.status === 'accepted' ? 'pill ok' : 'pill err' }, a.status)),
+          a.status === 'pending' && !a.claimedBy
+            ? el('span', { class: 'pill warnp' }, 'unclaimed')
+            : a.status === 'pending'
+              ? el('span', { class: 'pill info' }, `claimed by ${a.claimedBy}`)
+              : el('span', { class: a.status === 'accepted' ? 'pill ok' : a.status === 'withdrawn' ? 'pill mute' : 'pill err' }, a.status),
+          a.incomplete ? el('span', { class: 'pill err', title: 'The ban has no reason or clip recorded' }, 'no evidence') : null),
         el('div', { class: 'card-body' },
           el('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '4px' } }, 'ORIGINAL PUNISHMENT'),
           el('div', { style: { marginBottom: '14px' } },
@@ -655,6 +660,12 @@ export async function appealsView(view) {
             : null),
         el('div', { class: 'card-body', style: { borderTop: '1px solid var(--line-soft)' } },
           el('div', { class: 'btn-row' },
+            a.status === 'pending' && can('appeals.claim') && !a.claimedBy
+              ? el('button', { class: 'btn primary', onclick: () => claim(a) }, '⚑ Claim ticket')
+              : null,
+            a.status === 'pending' && can('appeals.claim') && a.claimedById === state.me.id
+              ? el('button', { class: 'btn', onclick: () => release(a) }, 'Release')
+              : null,
             can('appeals.chat')
               ? el('button', { class: 'btn', onclick: () => openThread(a) },
                   `✉ Conversation${a.messages ? ` (${a.messages})` : ''}`)
@@ -723,6 +734,12 @@ export async function appealsView(view) {
                 el('a', { href: data.appeal.ban.evidence, target: '_blank', rel: 'noopener', class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' } }, data.appeal.ban.evidence))
             : null),
         log,
+        data.appeal.status === 'pending' && !data.appeal.claimedBy
+          ? el('div', { class: 'appeal-waiting' },
+              el('b', {}, 'Nobody has claimed this ticket.'),
+              el('div', { style: { marginTop: '4px' } },
+                'The appellant cannot reply until somebody does. You can still write to them.'))
+          : null,
         data.appeal.status === 'pending'
           ? el('div', { class: 'appeal-compose' },
               el('div', { style: { display: 'flex', gap: '8px' } },
@@ -734,6 +751,26 @@ export async function appealsView(view) {
       actions: [{ label: 'Close', onClick: () => { appealsView(view); } }],
       onOpen: () => input.focus(),
     });
+  }
+
+  async function claim(appeal) {
+    try {
+      await api(`/appeals/${appeal.id}/claim`, { method: 'POST', body: {} });
+      toast('Ticket claimed. They can reply to you now.', 'ok');
+      appealsView(view);
+    } catch (err) { toast(errMessage(err), 'err'); }
+  }
+
+  async function release(appeal) {
+    const ok = await confirmDialog('Release the ticket',
+      'It goes back to the queue for somebody else, and the appellant cannot reply again until it is claimed.',
+      'Release it');
+    if (!ok) return;
+    try {
+      await api(`/appeals/${appeal.id}/release`, { method: 'POST', body: {} });
+      toast('Ticket released.', '');
+      appealsView(view);
+    } catch (err) { toast(errMessage(err), 'err'); }
   }
 
   function decide(appeal, decision) {

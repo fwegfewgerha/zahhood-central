@@ -78,6 +78,43 @@ console.log('Authentication');
     me.status === 200 && ['gin', 'game_owner'].includes(me.data.user.role));
 }
 
+// --- staff Roblox verification gate ------------------------------------------
+console.log('\nStaff Roblox verification');
+{
+  const { setSetting } = await import('../src/db.js');
+  const { linkedAccounts } = await import('../src/roblox.js');
+
+  db.prepare('DELETE FROM roblox_links WHERE user_id = ?').run(owner.id);
+  setSetting('require_staff_roblox', '1', null);
+
+  check('an unverified staff member has no linked account', linkedAccounts(owner).length === 0);
+
+  const blocked = await panel('/stats/live');
+  check('the panel is closed until they verify',
+    blocked.status === 403 && blocked.data.error === 'roblox_verification_required');
+
+  const meWhileBlocked = await panel('/me');
+  check('but /me still works, so the screen can be shown',
+    meWhileBlocked.status === 200 && meWhileBlocked.data.needsRobloxLink === true);
+
+  const linkStatus = await panel('/link/status');
+  check('the verification endpoint stays reachable', linkStatus.status === 200);
+
+  // Stand in for a completed profile check.
+  db.prepare('INSERT INTO roblox_links (user_id, roblox_id, roblox_username, verified_at) VALUES (?, ?, ?, ?)')
+    .run(owner.id, 700001, 'owner_account', Date.now());
+
+  const allowed = await panel('/stats/live');
+  check('the panel opens once an account is proved', allowed.status === 200);
+
+  const meAfter = await panel('/me');
+  check('/me stops asking once linked', meAfter.data.needsRobloxLink === false);
+
+  // The rest of the suite drives several seeded staff accounts, none of which
+  // have linked an account, so the requirement stands down from here.
+  setSetting('require_staff_roblox', '0', null);
+}
+
 // --- 2. heartbeat + presence ---------------------------------------
 console.log('\nHeartbeat and presence');
 {
@@ -611,26 +648,48 @@ console.log('\nAppeal flow');
   check('the appeal can be filed', filed.status === 200);
 
   const mine = await asPlayer('/api/appeal/mine');
+  // System notices (waiting to be claimed, and so on) sit alongside the real
+  // messages, so count only what people actually said.
+  const said = (r) => r.data.appeal.messages.filter((m) => m.from !== 'system');
   check('the conversation opens with their message',
-    mine.status === 200 && mine.data.appeal.messages.length === 1);
+    mine.status === 200 && said(mine).length === 1);
 
   const queue = await panel('/appeals?status=pending');
   const appealId = queue.data.appeals.find((a) => a.robloxId === ROBLOX)?.id;
   check('staff see it in the queue', !!appealId);
 
   const thread = await panel(`/appeals/${appealId}/messages`);
-  check('staff can open the conversation', thread.status === 200 && thread.data.messages.length === 1);
+  check('staff can open the conversation',
+    thread.status === 200 && thread.data.messages.filter((m) => m.from !== 'system').length === 1);
 
   const reply = await panel(`/appeals/${appealId}/messages`, { body: 'Which account was your brother on?' }, 'POST');
   check('staff can reply', reply.status === 200);
 
   const afterReply = await asPlayer('/api/appeal/mine');
-  check('the player sees the reply', afterReply.data.appeal.messages.length === 2);
+  const spoken = said(afterReply);
+  check('the player sees the reply', spoken.length === 2);
   check('the player sees a rank, not a staff name',
-    afterReply.data.appeal.messages[1].author === 'Gin');
+    spoken[1].from === 'staff' && spoken[1].author === 'Gin');
+
+  const tooEarly = await asPlayer('/api/appeal/mine/message', { body: 'Hello?' }, 'POST');
+  check('the player cannot speak before the ticket is claimed',
+    tooEarly.status === 409 && tooEarly.data.error === 'awaiting_claim');
+
+  const waiting = await asPlayer('/api/appeal/mine');
+  check('they are told it is waiting to be claimed', waiting.data.appeal.claimed === false);
+
+  const claimed = await panel(`/appeals/${appealId}/claim`, {}, 'POST');
+  check('a moderator can claim the ticket', claimed.status === 200);
+
+  const reclaim = await panel(`/appeals/${appealId}/claim`, {}, 'POST');
+  check('claiming your own ticket again is harmless', reclaim.status === 200);
+
+  const afterClaim = await asPlayer('/api/appeal/mine');
+  check('the appellant sees it is claimed', afterClaim.data.appeal.claimed === true);
+  check('they are told the rank, not the name', afterClaim.data.appeal.claimedByRole === 'Gin');
 
   const playerReply = await asPlayer('/api/appeal/mine/message', { body: 'He does not have his own account.' }, 'POST');
-  check('the player can reply back', playerReply.status === 200);
+  check('the player can reply once it is claimed', playerReply.status === 200);
 
   const chatMod = db.prepare("SELECT * FROM users WHERE role = 'chat_mod' LIMIT 1").get();
   if (chatMod) {

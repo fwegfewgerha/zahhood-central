@@ -316,12 +316,14 @@ function showThread(cfg, appeal) {
   input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send.click(); } };
 
   const statusPill =
-    appeal.status === 'pending' ? el('span', { class: 'pill warnp' }, 'waiting on staff')
+    appeal.status === 'pending' && !appeal.claimed ? el('span', { class: 'pill warnp' }, 'waiting to be claimed')
+      : appeal.status === 'pending' ? el('span', { class: 'pill info' }, `claimed by a ${appeal.claimedByRole || 'moderator'}`)
       : appeal.status === 'accepted' ? el('span', { class: 'pill ok' }, 'accepted')
       : appeal.status === 'withdrawn' ? el('span', { class: 'pill mute' }, 'withdrawn')
       : el('span', { class: 'pill err' }, 'denied');
 
   const open = appeal.status === 'pending';
+  const canSpeak = open && appeal.claimed;
 
   card(
     signedInAs(cfg),
@@ -333,12 +335,25 @@ function showThread(cfg, appeal) {
       ? el('div', { class: 'appeal-ban-note' }, el('b', {}, 'Ban: '), appeal.ban.reason)
       : null,
     log,
-    open
+    open && !appeal.claimed
+      ? el('div', { class: 'appeal-waiting' },
+          el('b', {}, appeal.awaitingDetails
+            ? 'This ban has no reason or clip recorded yet.'
+            : 'Waiting for a moderator to claim this ticket.'),
+          el('div', { style: { marginTop: '5px' } },
+            appeal.awaitingDetails
+              ? 'A moderator has to look into it before anyone can explain it to you. You will be able to reply once somebody claims the ticket.'
+              : 'You will be able to reply as soon as somebody picks it up. There is nothing else you need to do.'))
+      : null,
+    canSpeak
       ? el('div', { class: 'appeal-compose' },
           el('div', { style: { display: 'flex', gap: '8px' } }, input, send),
           el('div', { class: 'note', style: { marginTop: '8px', display: 'flex', justifyContent: 'space-between' } },
             el('span', {}, 'Staff reply here. You will see it when you come back.'),
             el('a', { href: '#', onclick: (e) => { e.preventDefault(); withdraw(cfg); } }, 'Withdraw appeal')))
+      : open
+        ? el('p', { class: 'note' },
+            el('a', { href: '#', onclick: (e) => { e.preventDefault(); withdraw(cfg); } }, 'Withdraw appeal'))
       : el('p', { class: 'note' },
           'This appeal is closed. ', el('a', { href: '/' }, 'Back to Zah Hood Central')));
 

@@ -11,6 +11,7 @@ import { accessView } from './views-access.js';
 import { permissionsView } from './views-perms.js';
 import { trafficView, visitorView } from './views-traffic.js';
 import { chatmodView } from './views-chatmod.js';
+import { robloxLinkScreen } from './views-link.js';
 
 const ROUTES = {
   '': { title: 'Dashboard', render: dashboardView },
@@ -92,6 +93,12 @@ async function boot() {
   if (!me.staff) {
     clear(root).append(notStaffScreen());
     return;
+  }
+
+  // Staff prove a Roblox account before the panel opens. The API enforces
+  // this too, so this screen is the way through rather than a formality.
+  if (me.needsRobloxLink) {
+    return robloxLinkScreen(root, state.me, () => boot());
   }
 
   state.meta = await api('/meta');
