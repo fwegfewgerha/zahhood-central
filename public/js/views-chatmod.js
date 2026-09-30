@@ -102,6 +102,9 @@ export async function chatmodView(view) {
           return;
         }
         const t = el('table');
+        t.append(el('thead', {}, el('tr', {},
+          el('th', {}, 'Person'), el('th', {}, 'Discord ID'),
+          el('th', {}, 'Status'), el('th', {}, 'Record'), el('th', {}, ''))));
         const tb = el('tbody');
         for (const m of found.members) {
           tb.append(el('tr', {},
@@ -114,6 +117,15 @@ export async function chatmodView(view) {
             el('td', {}, m.timedOutUntil
               ? el('span', { class: 'pill warnp' }, `muted · ${duration(m.timedOutUntil - Date.now())} left`)
               : el('span', { class: 'pill ok' }, 'not muted')),
+            el('td', {}, m.priorMutes
+              ? el('div', {},
+                  el('span', { class: m.priorMutes >= 3 ? 'pill err' : 'pill warnp' },
+                    `${m.priorMutes} prior mute${m.priorMutes === 1 ? '' : 's'}`),
+                  m.mutesLast30Days
+                    ? el('div', { class: 'muted', style: { fontSize: '11px', marginTop: '3px' } },
+                        `${m.mutesLast30Days} in the last 30 days`)
+                    : null)
+              : el('span', { class: 'muted', style: { fontSize: '12px' } }, 'clean record')),
             el('td', { class: 'right' },
               can('chatmod.mute') && data.bot.ok
                 ? el('button', { class: 'btn sm danger', onclick: () => muteDialog(m) }, 'Mute')
@@ -140,15 +152,100 @@ export async function chatmodView(view) {
     const dur = el('select', {}, ...DURATIONS.map(([v, label]) => el('option', { value: v }, label)));
     dur.value = '10m';
 
+    // A mute cannot be issued without a screenshot, so the dialog makes that
+    // the first thing you see rather than a surprise at the end.
+    let evidenceId = null;
+    let muteBtn = null;
+    const preview = el('div', { class: 'shot-preview' });
+    const fileInput = el('input', {
+      type: 'file',
+      accept: 'image/png,image/jpeg,image/gif,image/webp',
+      style: { display: 'none' },
+    });
+    const drop = el('div', { class: 'shot-drop' },
+      el('div', { style: { fontSize: '13px', fontWeight: 600, marginBottom: '4px' } }, 'Screenshot required'),
+      el('div', { class: 'muted', style: { fontSize: '12px' } },
+        'Paste with Ctrl+V, drop an image here, or ',
+        el('a', { href: '#', onclick: (e) => { e.preventDefault(); fileInput.click(); } }, 'choose a file')));
+
+    const refreshMuteButton = () => {
+      if (!muteBtn) return;
+      muteBtn.disabled = !evidenceId;
+      muteBtn.title = evidenceId ? '' : 'Attach a screenshot first';
+    };
+    const setStatus = (node) => { clear(preview); if (node) preview.append(node); };
+
+    async function upload(file) {
+      if (!file) return;
+      if (!/^image\//.test(file.type)) { toast('That is not an image.', 'err'); return; }
+      if (file.size > 4 * 1024 * 1024) { toast('That image is over 4MB. Crop it or save it smaller.', 'err'); return; }
+
+      setStatus(el('div', { class: 'muted', style: { fontSize: '12.5px' } }, 'Uploading\u2026'));
+      let dataUrl;
+      try {
+        dataUrl = await new Promise((resolve, reject) => {
+          const fr = new FileReader();
+          fr.onload = () => resolve(fr.result);
+          fr.onerror = reject;
+          fr.readAsDataURL(file);
+        });
+      } catch {
+        toast('Could not read that file.', 'err');
+        setStatus(null);
+        return;
+      }
+
+      try {
+        const up = await api('/chatmod/evidence', { method: 'POST', body: { image: dataUrl } });
+        evidenceId = up.evidenceId;
+        drop.style.display = 'none';
+        setStatus(el('div', {},
+          el('img', { src: dataUrl, class: 'shot-img', alt: 'Evidence' }),
+          el('div', { style: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '6px' } },
+            el('span', { class: 'pill ok' }, 'attached \u00b7 ' + Math.round(up.bytes / 1024) + ' KB'),
+            el('button', {
+              class: 'btn sm',
+              onclick: () => {
+                evidenceId = null;
+                setStatus(null);
+                drop.style.display = '';
+                refreshMuteButton();
+              },
+            }, 'Remove'))));
+      } catch (err) {
+        toast(errMessage(err), 'err');
+        setStatus(null);
+      }
+      refreshMuteButton();
+    }
+
+    fileInput.onchange = (e) => upload(e.target.files && e.target.files[0]);
+    drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+    drop.ondragleave = () => drop.classList.remove('over');
+    drop.ondrop = (e) => {
+      e.preventDefault();
+      drop.classList.remove('over');
+      upload(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]);
+    };
+
+    const onPaste = (e) => {
+      const items = (e.clipboardData && e.clipboardData.items) || [];
+      const item = [...items].find((i) => i.type.startsWith('image/'));
+      if (item) { e.preventDefault(); upload(item.getAsFile()); }
+    };
+    document.addEventListener('paste', onPaste);
+    const done = () => document.removeEventListener('paste', onPaste);
+
     modal({
-      title: `Mute ${member.displayName}`,
+      title: 'Mute ' + member.displayName,
       body: el('div', {},
         el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' } },
           el('img', { src: member.avatar, alt: '', style: { width: '44px', height: '44px', borderRadius: '50%' } }),
           el('div', {},
             el('b', {}, member.displayName),
             el('div', { class: 'mono muted', style: { fontSize: '11.5px' } }, member.discordId))),
-        el('label', { class: 'field' }, el('span', {}, 'Duration'), dur),
+        drop, preview, fileInput,
+        el('label', { class: 'field', style: { marginTop: '14px' } }, el('span', {}, 'Duration'), dur),
         el('label', { class: 'field' }, el('span', {}, 'Reason'), reason),
         el('div', {
           style: {
@@ -157,26 +254,48 @@ export async function chatmodView(view) {
           },
         },
           el('b', {}, 'You stay anonymous. '),
-          'Discord records the bot as the one who muted them. Your name is kept here, where staff can see it, and is never sent to Discord.')),
+          'Discord records the bot as the one who muted them. Your name and the screenshot stay here, where staff can see them, and are never sent to Discord.')),
       actions: [
-        { label: 'Cancel' },
+        { label: 'Cancel', onClick: done },
         {
           kind: 'danger',
           label: 'Mute',
           onClick: async () => {
+            if (!evidenceId) { toast('Attach a screenshot of what they said.', 'err'); return 'keep'; }
             const body = reason.value.trim();
             if (!body) { toast('A reason is required.', 'err'); return 'keep'; }
             const result = await api('/chatmod/mute', {
               method: 'POST',
-              body: { discordId: member.discordId, name: member.displayName, reason: body, duration: dur.value },
+              body: {
+                discordId: member.discordId,
+                name: member.displayName,
+                reason: body,
+                duration: dur.value,
+                evidenceId,
+              },
             });
-            toast(`${member.displayName} muted for ${DURATIONS.find(([v]) => v === dur.value)[1].toLowerCase()}.`, 'ok');
-            if (result.cappedTo28Days) toast('Shortened to 28 days, which is Discord’s limit.', '');
+            done();
+            toast(member.displayName + ' muted.', 'ok');
+            if (result.cappedTo28Days) toast('Shortened to 28 days, which is Discord\u2019s limit.', '');
             chatmodView(view);
           },
         },
       ],
-      onOpen: () => reason.focus(),
+      onOpen: (box) => {
+        muteBtn = [...box.querySelectorAll('footer .btn')].find((b) => b.textContent === 'Mute');
+        refreshMuteButton();
+        reason.focus();
+      },
+    });
+  }
+
+  function viewEvidence(mute) {
+    modal({
+      title: 'Evidence \u2014 ' + (mute.name || mute.discordId),
+      body: el('div', {},
+        el('div', { class: 'appeal-ban-note' }, el('b', {}, 'Reason: '), mute.reason),
+        el('img', { src: '/api/chatmod/evidence/' + mute.evidenceId, class: 'shot-img', alt: 'Evidence' })),
+      actions: [{ label: 'Close' }],
     });
   }
 
@@ -237,7 +356,13 @@ export async function chatmodView(view) {
             ? el('span', { class: 'pill mute' }, `lifted by ${m.revokedBy}`)
             : el('span', { class: 'pill mute' }, 'expired')),
         el('td', { class: 'right' },
-          canLift ? el('button', { class: 'btn sm', onclick: () => lift(m) }, 'Lift') : null)));
+          el('div', { class: 'btn-row', style: { justifyContent: 'flex-end' } },
+            m.evidenceAvailable && can('chatmod.evidence')
+              ? el('button', { class: 'btn sm', onclick: () => viewEvidence(m) }, 'Screenshot')
+              : m.evidenceExpired
+                ? el('span', { class: 'pill mute', title: 'The mute record is kept for good; the image is not.' }, 'shot expired')
+                : null,
+            canLift ? el('button', { class: 'btn sm', onclick: () => lift(m) }, 'Lift') : null))));
     }
     t.append(tb);
     return t;
@@ -268,6 +393,8 @@ export async function chatmodView(view) {
           el('li', {}, 'Your name is kept ', el('b', {}, 'here'), ', on this page and in the audit log, so the team stays accountable to each other.'),
           el('li', {}, 'Mutes last at most 28 days, which is Discord’s own limit, and Discord lifts them on time without the panel doing anything.'),
           el('li', {}, 'You can only lift a mute issued by a rank below yours, or one you issued yourself.'),
+          el('li', {}, 'Every mute needs a screenshot. The server refuses one without it, so it cannot be skipped by anybody at any rank.'),
+          el('li', {}, `Screenshots are deleted after ${data.evidenceRetentionDays || 90} days to keep the database small. The mute itself is kept for good, so somebody’s record follows them however long it has been.`),
           el('li', {}, 'The bot has no slash commands and never connects to Discord’s gateway, so nothing inside Discord can tell it to act. This website is its only caller.'),
           el('li', {}, 'Its code is locked to timeouts: reads to find someone, and one write that may only set a timeout. Banning, kicking, posting and role changes are refused before the request is sent.'))));
   }

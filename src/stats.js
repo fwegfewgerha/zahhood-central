@@ -1,4 +1,4 @@
-import { db, now } from './db.js';
+import { db, now, getSetting } from './db.js';
 import { config } from './config.js';
 import { broadcast } from './realtime.js';
 import { expirePunishments } from './moderation.js';
@@ -160,8 +160,26 @@ export function sampleNow() {
 }
 
 /** Housekeeping: trim history and finished queue rows so the file stays small. */
+/**
+ * Drop old screenshots, never the mutes themselves.
+ *
+ * The image is only needed while a mute could still be questioned; the record
+ * that somebody was muted, why, and by whom has to follow them for good. So
+ * this deletes bytes out of mute_evidence and leaves every chat_mutes row
+ * exactly where it is.
+ */
+export function pruneEvidence() {
+  const days = Number(getSetting('evidence_retention_days', '90'));
+  if (!Number.isFinite(days) || days <= 0) return 0;
+  const cutoff = now() - days * 864e5;
+  const info = db.prepare('DELETE FROM mute_evidence WHERE created_at < ?').run(cutoff);
+  if (info.changes) console.log(`[prune] dropped ${info.changes} expired mute screenshot(s)`);
+  return info.changes;
+}
+
 export function prune() {
   const t = now();
+  pruneEvidence();
   db.prepare('DELETE FROM stat_samples WHERE bucket < ?').run(Math.floor((t - 30 * 864e5) / MINUTE));
   db.prepare('DELETE FROM game_events WHERE created_at < ?').run(t - 30 * 864e5);
   db.prepare('DELETE FROM action_queue WHERE acked_at IS NOT NULL AND acked_at < ?').run(t - 2 * 864e5);

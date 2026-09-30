@@ -147,6 +147,7 @@ export const PERMISSIONS = {
   'chatmod.view':      10,  // the chat moderation section
   'chatmod.mute':      10,  // time someone out in the Discord server
   'chatmod.unmute':    10,  // lift a mute (only one from a lower rank)
+  'chatmod.evidence':  10,  // view the screenshot behind a mute
   'staff.manage':      70,  // promote / demote, always strictly below your own rank
   'staff.remove':      70,
   'apikeys.view':      70,
@@ -197,6 +198,7 @@ export const PERMISSION_META = {
   'chatmod.view':      { category: 'Chat moderation', label: 'Open chat moderation', desc: 'The Discord mute tools. Chat Moderator is the lowest rank that has this by default.' },
   'chatmod.mute':      { category: 'Chat moderation', label: 'Mute in Discord', desc: 'Times the person out in your Discord server. Discord never shows who ordered it.' },
   'chatmod.unmute':    { category: 'Chat moderation', label: 'Lift a Discord mute', desc: 'Still only mutes issued by a rank below their own.' },
+  'chatmod.evidence':  { category: 'Chat moderation', label: 'View mute screenshots', desc: 'Open the screenshot attached to a mute.' },
 
   'servers.shutdown':  { category: 'Servers', label: 'Shut down a server', desc: 'Disconnects everyone inside it.', danger: true },
 

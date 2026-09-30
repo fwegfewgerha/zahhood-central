@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import { db, now, audit, jsonOr, isWhitelistEnabled, setSetting, getSetting } from '../db.js';
 import { config, SITE } from '../config.js';
 import { publicUser, requireLogin, requireStaff, requirePerm, avatarUrl, clientIp } from '../auth.js';
@@ -879,6 +880,14 @@ function shapeMute(m) {
     revokeReason: m.revoke_reason,
     delivered: !!m.delivered,
     error: m.delivery_error,
+    evidenceId: m.evidence_id || null,
+    // A mute keeps its record for good, but the screenshot behind it is
+    // dropped after the retention window. Say which case this is.
+    evidenceAvailable: m.evidence_id
+      ? !!db.prepare('SELECT 1 AS x FROM mute_evidence WHERE id = ?').get(m.evidence_id)
+      : false,
+    evidenceExpired: !!m.evidence_id
+      && !db.prepare('SELECT 1 AS x FROM mute_evidence WHERE id = ?').get(m.evidence_id),
   };
 }
 
@@ -897,6 +906,7 @@ apiRouter.get('/chatmod', requirePerm('chatmod.view'), async (req, res) => {
     bot: botConfigured() ? await botSelfCheck() : { ok: false, error: botProblem() },
     inviteUrl: botInviteUrl(),
     maxDurationMs: MAX_TIMEOUT_MS,
+    evidenceRetentionDays: Number(getSetting('evidence_retention_days', '90')),
     active: active.map(shapeMute),
     history: recent.map(shapeMute),
     stats: {
@@ -917,15 +927,88 @@ apiRouter.get('/chatmod/lookup', requirePerm('chatmod.view'), async (req, res) =
     // A bare snowflake is a direct lookup; anything else is a name search.
     if (/^\d{17,20}$/.test(q)) {
       const member = shapeMember(await getMember(q));
-      return res.json({ members: member ? [member] : [] });
+      return res.json({ members: member ? [withHistory(member)] : [] });
     }
     const found = await searchMembers(q, 10);
-    res.json({ members: (found || []).map(shapeMember).filter(Boolean) });
+    res.json({ members: (found || []).map(shapeMember).filter(Boolean).map(withHistory) });
   } catch (err) {
     if (err.status === 404) return res.json({ members: [] });
     res.status(502).json({ error: 'discord_error', detail: explainDiscordError(err) });
   }
 });
+
+/**
+ * Upload the screenshot before muting. Held on its own until a mute claims
+ * it, so a half-finished dialog leaves nothing behind that matters.
+ */
+const EVIDENCE_MAX_BYTES = 4 * 1024 * 1024;
+const EVIDENCE_TYPES = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'];
+
+apiRouter.post('/chatmod/evidence', requirePerm('chatmod.mute'), express.json({ limit: '8mb' }), (req, res) => {
+  const dataUrl = String(req.body?.image || '');
+  const m = dataUrl.match(/^data:([a-z]+\/[a-z0-9.+-]+);base64,(.+)$/i);
+  if (!m) return res.status(400).json({ error: 'image_required' });
+
+  const mime = m[1].toLowerCase();
+  if (!EVIDENCE_TYPES.includes(mime)) return res.status(415).json({ error: 'unsupported_image_type', mime });
+
+  let bytes;
+  try {
+    bytes = Buffer.from(m[2], 'base64');
+  } catch {
+    return res.status(400).json({ error: 'image_unreadable' });
+  }
+  if (!bytes.length) return res.status(400).json({ error: 'image_empty' });
+  if (bytes.length > EVIDENCE_MAX_BYTES) {
+    return res.status(413).json({ error: 'image_too_large', maxBytes: EVIDENCE_MAX_BYTES });
+  }
+
+  // Check the magic bytes rather than trusting the declared type.
+  const looksRight =
+    (mime === 'image/png' && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) ||
+    (mime === 'image/jpeg' && bytes[0] === 0xff && bytes[1] === 0xd8) ||
+    (mime === 'image/gif' && bytes.subarray(0, 3).toString('ascii') === 'GIF') ||
+    (mime === 'image/webp' && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP');
+  if (!looksRight) return res.status(415).json({ error: 'not_an_image' });
+
+  const sha = crypto.createHash('sha256').update(bytes).digest('hex');
+  const info = db
+    .prepare(
+      `INSERT INTO mute_evidence (mime, bytes, byte_size, sha256, uploaded_by, uploaded_by_name, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    )
+    .run(mime, bytes, bytes.length, sha, req.user.id, req.user.discord_username, now());
+
+  res.json({ ok: true, evidenceId: Number(info.lastInsertRowid), bytes: bytes.length, mime });
+});
+
+/** Serve a screenshot. Staff only - it never becomes a public URL. */
+apiRouter.get('/chatmod/evidence/:id', requirePerm('chatmod.evidence'), (req, res) => {
+  const row = db.prepare('SELECT mime, bytes FROM mute_evidence WHERE id = ?').get(int(req.params.id));
+  if (!row) return res.status(404).json({ error: 'not_found' });
+  res.setHeader('Content-Type', row.mime);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.setHeader('Content-Disposition', 'inline');
+  res.end(Buffer.from(row.bytes));
+});
+
+/** How many times this person has been muted before, ever. */
+function withHistory(member) {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS total,
+              COALESCE(MAX(issued_at), 0) AS last_at,
+              SUM(CASE WHEN issued_at > ? THEN 1 ELSE 0 END) AS recent
+         FROM chat_mutes WHERE discord_id = ?`
+    )
+    .get(now() - 30 * 864e5, member.discordId);
+  return {
+    ...member,
+    priorMutes: row.total,
+    mutesLast30Days: row.recent || 0,
+    lastMutedAt: row.last_at || null,
+  };
+}
 
 apiRouter.post('/chatmod/mute', requirePerm('chatmod.mute'), async (req, res) => {
   if (!botConfigured()) return res.status(503).json({ error: 'bot_not_configured', detail: botProblem() });
@@ -938,6 +1021,16 @@ apiRouter.post('/chatmod/mute', requirePerm('chatmod.mute'), async (req, res) =>
 
   const durationMs = parseDuration(req.body?.duration);
   if (!durationMs || durationMs <= 0) return res.status(400).json({ error: 'duration_required' });
+
+  // No screenshot, no mute. A mute nobody can review later is worse than no
+  // mute at all, so this is enforced here rather than only in the dialog.
+  const evidenceId = int(req.body?.evidenceId);
+  const evidence = evidenceId
+    ? db.prepare('SELECT id, uploaded_by, used FROM mute_evidence WHERE id = ?').get(evidenceId)
+    : null;
+  if (!evidence) return res.status(400).json({ error: 'evidence_required' });
+  if (evidence.uploaded_by !== req.user.id) return res.status(403).json({ error: 'evidence_not_yours' });
+  if (evidence.used) return res.status(409).json({ error: 'evidence_already_used' });
 
   // Never let a chat mod mute somebody who outranks them on the site.
   const targetStaff = db.prepare('SELECT role, discord_username FROM users WHERE discord_id = ?').get(discordId);
@@ -964,10 +1057,12 @@ apiRouter.post('/chatmod/mute', requirePerm('chatmod.mute'), async (req, res) =>
     .prepare(
       `INSERT INTO chat_mutes
          (discord_id, discord_name, reason, issued_by, issued_by_name, issued_by_role,
-          issued_at, expires_at, active, delivered)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`
+          issued_at, expires_at, active, delivered, evidence_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`
     )
-    .run(discordId, name, reason, req.user.id, req.user.discord_username, req.user.role, t, applied.until);
+    .run(discordId, name, reason, req.user.id, req.user.discord_username, req.user.role, t, applied.until, evidence.id);
+
+  db.prepare('UPDATE mute_evidence SET used = 1 WHERE id = ?').run(evidence.id);
 
   audit(req.user, 'chatmod.mute', `discord:${discordId}`, `${reason} (until ${new Date(applied.until).toISOString()})`, clientIp(req));
 

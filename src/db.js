@@ -300,6 +300,22 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   PRIMARY KEY (role_key, permission)
 );
 
+-- Screenshots backing a chat mute. Kept as bytes rather than a link, because
+-- Discord CDN URLs expire and the evidence would quietly rot. Stored here it
+-- is replicated with the rest of the database and moves hosts with it.
+CREATE TABLE IF NOT EXISTS mute_evidence (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  mime         TEXT    NOT NULL,
+  bytes        BLOB    NOT NULL,
+  byte_size    INTEGER NOT NULL,
+  sha256       TEXT    NOT NULL,
+  uploaded_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_by_name TEXT,
+  created_at   INTEGER NOT NULL,
+  used         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_unused ON mute_evidence(used, created_at);
+
 -- Discord chat mutes, applied to your Discord server by the bot.
 -- The moderator is recorded here but never sent to Discord, so a timeout
 -- cannot be traced back to whoever ordered it from inside the server.
@@ -395,6 +411,7 @@ addColumnIfMissing('users', 'roblox_verified_at', 'INTEGER');
 addColumnIfMissing('users', 'roblox_verify_code', 'TEXT');
 addColumnIfMissing('users', 'roblox_verify_target', 'INTEGER');
 addColumnIfMissing('users', 'roblox_verify_expires', 'INTEGER');
+addColumnIfMissing('chat_mutes', 'evidence_id', 'INTEGER');
 
 // The whitelist is ON out of the box: a fresh install lets nobody in except
 // the configured OWNER_DISCORD_ID until that owner adds people by hand.
@@ -406,6 +423,9 @@ const DEFAULT_SETTINGS = {
   // message. Without it, anyone who knows a username can read that player's
   // ban reason and evidence link. Off by default so the flow stays simple.
   appeal_require_code: '0',
+  // Screenshots are dropped after this many days to keep the database small.
+  // The mute itself is never deleted - somebody's record has to follow them.
+  evidence_retention_days: '90',
 };
 const settingInsert = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
 for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {

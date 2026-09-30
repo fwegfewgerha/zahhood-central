@@ -717,6 +717,132 @@ console.log('\nBot capability lock');
     !(botInviteUrl() || '').includes('applications.commands'));
 }
 
+// --- 18. a mute needs a screenshot -------------------------------------------
+console.log('\nMute evidence');
+{
+  // A 1x1 PNG, with correct magic bytes.
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const asDataUrl = (buf, mime) => `data:${mime};base64,${buf.toString('base64')}`;
+
+  const noEvidence = await panel('/chatmod/mute', {
+    discordId: '123456789012345678', reason: 'test', duration: '10m',
+  }, 'POST');
+  check('a mute without a screenshot is refused',
+    noEvidence.status === 400 && noEvidence.data.error === 'evidence_required');
+
+  const bogusId = await panel('/chatmod/mute', {
+    discordId: '123456789012345678', reason: 'test', duration: '10m', evidenceId: 999999,
+  }, 'POST');
+  check('a made-up evidence id is refused', bogusId.status === 400);
+
+  const notImage = await panel('/chatmod/evidence', {
+    image: asDataUrl(Buffer.from('this is plainly not a png'), 'image/png'),
+  }, 'POST');
+  check('a non-image pretending to be a PNG is refused',
+    notImage.status === 415 && notImage.data.error === 'not_an_image');
+
+  const wrongType = await panel('/chatmod/evidence', {
+    image: asDataUrl(PNG, 'application/pdf'),
+  }, 'POST');
+  check('a non-image type is refused', wrongType.status === 415);
+
+  const empty = await panel('/chatmod/evidence', { image: 'not-a-data-url' }, 'POST');
+  check('a malformed upload is refused', empty.status === 400);
+
+  const up = await panel('/chatmod/evidence', { image: asDataUrl(PNG, 'image/png') }, 'POST');
+  check('a real PNG uploads', up.status === 200 && typeof up.data.evidenceId === 'number');
+
+  const served = await fetch(`${BASE}/api/chatmod/evidence/${up.data.evidenceId}`, {
+    headers: { Cookie: cookie },
+  });
+  check('the screenshot serves back to staff',
+    served.status === 200 && served.headers.get('content-type') === 'image/png');
+
+  const anon = await fetch(`${BASE}/api/chatmod/evidence/${up.data.evidenceId}`);
+  check('the screenshot is not public', anon.status === 401);
+
+  // Somebody else's upload cannot be borrowed.
+  const chatMod = db.prepare("SELECT * FROM users WHERE role = 'chat_mod' LIMIT 1").get();
+  if (chatMod) {
+    const lowSid = crypto.randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(lowSid, chatMod.id, Date.now(), Date.now() + 3600000, Date.now(), 'smoke-test');
+    const lc = `zhc_sid=${lowSid}.${crypto.createHmac('sha256', config.sessionSecret).update(lowSid).digest('base64url')}`;
+    const borrowed = await fetch(`${BASE}/api/chatmod/mute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: lc, Origin: BASE },
+      body: JSON.stringify({
+        discordId: '123456789012345678', reason: 'borrowing', duration: '10m',
+        evidenceId: up.data.evidenceId,
+      }),
+    }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }));
+    check('another staff member cannot use your screenshot',
+      borrowed.status === 403 && borrowed.data.error === 'evidence_not_yours');
+  }
+
+  db.prepare('DELETE FROM mute_evidence WHERE id = ?').run(up.data.evidenceId);
+}
+
+// --- 19. the record outlives the screenshot ----------------------------------
+console.log('\nMute record retention');
+{
+  const { pruneEvidence } = await import('../src/stats.js');
+  const { setSetting } = await import('../src/db.js');
+  const PNG = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64'
+  );
+  const TARGET = '424242424242424242';
+  db.prepare('DELETE FROM chat_mutes WHERE discord_id = ?').run(TARGET);
+
+  const t = Date.now();
+  const old = Date.now() - 200 * 864e5;
+  const gin = db.prepare("SELECT * FROM users WHERE role IN ('gin','game_owner') ORDER BY id LIMIT 1").get();
+
+  const mkEvidence = (createdAt) =>
+    Number(db.prepare(
+      `INSERT INTO mute_evidence (mime, bytes, byte_size, sha256, uploaded_by, uploaded_by_name, created_at, used)
+       VALUES ('image/png', ?, ?, 'x', ?, ?, ?, 1)`
+    ).run(PNG, PNG.length, gin.id, gin.discord_username, createdAt).lastInsertRowid);
+
+  const oldEv = mkEvidence(old);
+  const newEv = mkEvidence(t);
+  const mkMute = (evId, at) =>
+    db.prepare(
+      `INSERT INTO chat_mutes (discord_id, discord_name, reason, issued_by, issued_by_name, issued_by_role,
+                               issued_at, expires_at, active, delivered, evidence_id)
+       VALUES (?, 'RepeatOffender', 'test mute', ?, ?, ?, ?, ?, 0, 1, ?)`
+    ).run(TARGET, gin.id, gin.discord_username, gin.role, at, at + 600000, evId);
+
+  mkMute(oldEv, old);
+  mkMute(newEv, t);
+
+  const before = await panel('/chatmod');
+  check('both mutes are on record', before.data.history.filter((m) => m.discordId === TARGET).length === 2);
+
+  setSetting('evidence_retention_days', '90', null);
+  const dropped = pruneEvidence();
+  check('the old screenshot is pruned', dropped >= 1);
+
+  const after = await panel('/chatmod');
+  const mine = after.data.history.filter((m) => m.discordId === TARGET);
+  check('the mute records survive the prune', mine.length === 2);
+  check('the recent screenshot is still there', mine.some((m) => m.evidenceAvailable));
+  check('the old screenshot reads as expired, not missing', mine.some((m) => m.evidenceExpired));
+
+  // Their count is what follows them around.
+  const total = db.prepare('SELECT COUNT(*) AS n FROM chat_mutes WHERE discord_id = ?').get(TARGET).n;
+  check('the mute count is unaffected by pruning', total === 2);
+
+  db.prepare('DELETE FROM chat_mutes WHERE discord_id = ?').run(TARGET);
+  db.prepare('DELETE FROM mute_evidence WHERE id IN (?, ?)').run(oldEv, newEv);
+  setSetting('evidence_retention_days', '90', null);
+}
+
 // --- cleanup --------------------------------------------------------------
 db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
 db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();

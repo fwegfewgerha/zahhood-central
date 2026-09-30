@@ -100,6 +100,13 @@ export const ERRORS = {
   duration_required: 'Pick how long the mute should last.',
   cannot_mute_yourself: 'You cannot mute yourself.',
   query_required: 'Type a name or user ID to search for.',
+  evidence_required: 'Attach a screenshot before muting.',
+  evidence_not_yours: 'That screenshot was uploaded by somebody else.',
+  evidence_already_used: 'That screenshot is already attached to another mute. Upload it again.',
+  image_required: 'Choose an image.',
+  unsupported_image_type: 'Use a PNG, JPEG, GIF or WebP.',
+  not_an_image: 'That file is not really an image.',
+  image_too_large: 'That image is over 4MB. Crop it or save it smaller.',
 };
 
 export function errMessage(err) {
