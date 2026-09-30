@@ -115,6 +115,34 @@ CREATE TABLE IF NOT EXISTS appeals (
   response        TEXT
 );
 
+-- Roblox accounts a Discord user has proved they own. One person may link
+-- several, which is both convenient for them and useful to staff: every
+-- linked account is, by definition, a confirmed alt of the same person.
+CREATE TABLE IF NOT EXISTS roblox_links (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  roblox_id       INTEGER NOT NULL UNIQUE,
+  roblox_username TEXT,
+  verified_at     INTEGER NOT NULL,
+  method          TEXT NOT NULL DEFAULT 'profile'
+);
+CREATE INDEX IF NOT EXISTS idx_links_user ON roblox_links(user_id);
+
+-- The back-and-forth on an appeal. The player reaches this through a secret
+-- token rather than an account; staff reach it from the panel.
+CREATE TABLE IF NOT EXISTS appeal_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  appeal_id   INTEGER NOT NULL REFERENCES appeals(id) ON DELETE CASCADE,
+  author_type TEXT    NOT NULL,          -- player | staff | system
+  user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  author_name TEXT,
+  author_role TEXT,
+  body        TEXT    NOT NULL,
+  created_at  INTEGER NOT NULL,
+  seen_by_player INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_appeal_msgs ON appeal_messages(appeal_id, id);
+
 CREATE TABLE IF NOT EXISTS player_notes (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   roblox_id   INTEGER NOT NULL,
@@ -359,13 +387,25 @@ function addColumnIfMissing(table, column, definition) {
   console.log(`[db] migrated: added ${table}.${column}`);
 }
 addColumnIfMissing('sessions', 'last_used_at', 'INTEGER');
+addColumnIfMissing('appeals', 'token', 'TEXT');
+addColumnIfMissing('appeals', 'closed_at', 'INTEGER');
+addColumnIfMissing('appeals', 'roblox_username', 'TEXT');
+addColumnIfMissing('punishments', 'appeal_code', 'TEXT');
+addColumnIfMissing('users', 'roblox_verified_at', 'INTEGER');
+addColumnIfMissing('users', 'roblox_verify_code', 'TEXT');
+addColumnIfMissing('users', 'roblox_verify_target', 'INTEGER');
+addColumnIfMissing('users', 'roblox_verify_expires', 'INTEGER');
 
 // The whitelist is ON out of the box: a fresh install lets nobody in except
 // the configured OWNER_DISCORD_ID until that owner adds people by hand.
 const DEFAULT_SETTINGS = {
   whitelist_enabled: '1',
-  // Lets a banned player sign in far enough to file an appeal, and no further.
+  // Whether banned players may open the appeal page at all.
   appeals_open: '1',
+  // When on, an appellant must also type the short code from their ban
+  // message. Without it, anyone who knows a username can read that player's
+  // ban reason and evidence link. Off by default so the flow stays simple.
+  appeal_require_code: '0',
 };
 const settingInsert = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
 for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {

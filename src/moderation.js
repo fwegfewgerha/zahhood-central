@@ -1,8 +1,23 @@
+import crypto from 'node:crypto';
 import { db, now, audit } from './db.js';
 import { role as roleInfo } from './roles.js';
 import { broadcast } from './realtime.js';
 
 export const PUNISHMENT_TYPES = ['warn', 'mute', 'kick', 'ban'];
+
+/**
+ * A short, unambiguous code shown to the player when they are banned.
+ * It proves an appellant actually received the ban, which is the only thing
+ * standing between a public appeal form and anyone reading any player's
+ * evidence. Excludes characters that are easy to misread aloud.
+ */
+const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+export function makeAppealCode(length = 6) {
+  const bytes = crypto.randomBytes(length);
+  let out = '';
+  for (let i = 0; i < length; i++) out += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
+  return out;
+}
 
 /** Expire anything whose clock ran out. Cheap enough to call on every read. */
 export function expirePunishments() {
@@ -71,12 +86,14 @@ export function issuePunishment({
   const t = now();
   const expiresAt = durationMs && durationMs > 0 ? t + durationMs : null;
 
+  const appealCode = type === 'ban' ? makeAppealCode() : null;
+
   const info = db
     .prepare(
       `INSERT INTO punishments
         (roblox_id, username, type, reason, evidence, issued_by, issued_by_name, issued_by_role,
-         issued_at, expires_at, active, source)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)`
+         issued_at, expires_at, active, source, appeal_code)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`
     )
     .run(
       robloxId,
@@ -89,7 +106,8 @@ export function issuePunishment({
       actor?.role ?? null,
       t,
       expiresAt,
-      source
+      source,
+      appealCode
     );
 
   const id = Number(info.lastInsertRowid);
@@ -105,6 +123,7 @@ export function issuePunishment({
         reason,
         expiresAt,
         punishmentId: id,
+        appealCode,
         issuedBy: punishment.issued_by_name,
       },
       actor,
@@ -261,6 +280,7 @@ export function shapePunishment(p) {
     issuedAt: p.issued_at,
     expiresAt: p.expires_at,
     permanent: p.type === 'ban' && p.expires_at === null,
+    appealCode: p.appeal_code || null,
     active: !!p.active,
     revokedBy: p.revoked_by_name,
     revokedAt: p.revoked_at,

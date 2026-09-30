@@ -608,7 +608,8 @@ export async function appealsView(view) {
   const sel = el('select', { style: { maxWidth: '180px' }, onchange: (e) => { status = e.target.value; load(); } },
     el('option', { value: 'pending' }, 'Pending'),
     el('option', { value: 'accepted' }, 'Accepted'),
-    el('option', { value: 'denied' }, 'Denied'));
+    el('option', { value: 'denied' }, 'Denied'),
+    el('option', { value: 'withdrawn' }, 'Withdrawn'));
 
   clear(view).append(el('div', { class: 'toolbar' }, sel), body);
 
@@ -640,6 +641,11 @@ export async function appealsView(view) {
             el('span', { class: 'pill err' }, a.banType),
             ' ', a.banReason,
             el('span', { class: 'muted' }, a.expiresAt ? ` · until ${dateTime(a.expiresAt)}` : ' · permanent')),
+          a.evidence
+            ? el('div', { style: { marginBottom: '14px' } },
+                el('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '4px' } }, 'EVIDENCE'),
+                el('a', { href: a.evidence, target: '_blank', rel: 'noopener', class: 'mono', style: { fontSize: '11.5px', wordBreak: 'break-all' } }, a.evidence))
+            : null,
           el('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '4px' } }, 'THEIR APPEAL'),
           el('div', { style: { whiteSpace: 'pre-wrap', fontSize: '13.5px' } }, a.body),
           a.response
@@ -647,14 +653,87 @@ export async function appealsView(view) {
                 el('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '4px' } }, `RULING BY ${(a.handledBy || '').toUpperCase()}`),
                 el('div', { style: { fontSize: '13.5px' } }, a.response))
             : null),
-        a.status === 'pending'
-          ? el('div', { class: 'card-body', style: { borderTop: '1px solid var(--line-soft)' } },
-              el('div', { class: 'btn-row' },
-                el('button', { class: 'btn primary', onclick: () => decide(a, 'accepted') }, '✓ Accept & lift ban'),
-                el('button', { class: 'btn danger', onclick: () => decide(a, 'denied') }, '× Deny')))
-          : null);
+        el('div', { class: 'card-body', style: { borderTop: '1px solid var(--line-soft)' } },
+          el('div', { class: 'btn-row' },
+            can('appeals.chat')
+              ? el('button', { class: 'btn', onclick: () => openThread(a) },
+                  `✉ Conversation${a.messages ? ` (${a.messages})` : ''}`)
+              : null,
+            a.status === 'pending' && can('appeals.review')
+              ? el('button', { class: 'btn primary', onclick: () => decide(a, 'accepted') }, '✓ Accept & lift ban')
+              : null,
+            a.status === 'pending' && can('appeals.review')
+              ? el('button', { class: 'btn danger', onclick: () => decide(a, 'denied') }, '× Deny')
+              : null)));
       body.append(card);
     }
+  }
+
+  /** The back-and-forth with the appellant. Moderator and above. */
+  async function openThread(appeal) {
+    let data;
+    try {
+      data = await api(`/appeals/${appeal.id}/messages`);
+    } catch (err) { toast(errMessage(err), 'err'); return; }
+
+    const log = el('div', { class: 'appeal-log', style: { maxHeight: '320px' } });
+    const input = el('textarea', { rows: 2, placeholder: 'Reply to the player…' });
+
+    const paint = (messages) => {
+      clear(log);
+      if (!messages.length) {
+        log.append(el('div', { class: 'appeal-system' }, 'Nothing said yet.'));
+        return;
+      }
+      for (const m of messages) {
+        if (m.from === 'system') {
+          log.append(el('div', { class: 'appeal-system' }, m.body));
+          continue;
+        }
+        log.append(el('div', { class: `appeal-msg ${m.from}` },
+          el('div', { class: 'appeal-msg-head' },
+            el('span', { style: m.roleColor ? { color: m.roleColor } : {} },
+              m.from === 'staff' ? `${m.author}${m.roleName ? ` · ${m.roleName}` : ''}` : m.author),
+            el('span', { class: 'appeal-time' }, timeAgo(m.at))),
+          el('div', { class: 'appeal-msg-body' }, m.body)));
+      }
+      log.scrollTop = log.scrollHeight;
+    };
+    paint(data.messages);
+
+    const send = async () => {
+      const body = input.value.trim();
+      if (!body) return;
+      input.value = '';
+      try {
+        await api(`/appeals/${appeal.id}/messages`, { method: 'POST', body: { body } });
+        const fresh = await api(`/appeals/${appeal.id}/messages`);
+        paint(fresh.messages);
+      } catch (err) { toast(errMessage(err), 'err'); input.value = body; }
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
+
+    modal({
+      title: `Appeal #${appeal.id} — ${data.appeal.username}`,
+      body: el('div', {},
+        el('div', { class: 'appeal-ban-note' },
+          el('b', {}, 'Ban: '), data.appeal.ban.reason,
+          data.appeal.ban.evidence
+            ? el('div', { style: { marginTop: '6px' } },
+                el('a', { href: data.appeal.ban.evidence, target: '_blank', rel: 'noopener', class: 'mono', style: { fontSize: '11px', wordBreak: 'break-all' } }, data.appeal.ban.evidence))
+            : null),
+        log,
+        data.appeal.status === 'pending'
+          ? el('div', { class: 'appeal-compose' },
+              el('div', { style: { display: 'flex', gap: '8px' } },
+                input,
+                el('button', { class: 'btn primary', onclick: send }, 'Send')),
+              el('div', { class: 'note', style: { marginTop: '8px' } },
+                'The player sees your rank, not your name. Other staff here see both.'))
+          : el('div', { class: 'note', style: { marginTop: '12px' } }, 'This appeal is closed.')),
+      actions: [{ label: 'Close', onClick: () => { appealsView(view); } }],
+      onOpen: () => input.focus(),
+    });
   }
 
   function decide(appeal, decision) {

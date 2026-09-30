@@ -21,6 +21,7 @@ import {
 } from '../moderation.js';
 import { createKey, listKeys, revokeKey } from '../apikeys.js';
 import { auditConfiguration } from '../security.js';
+import { ownerOf } from '../roblox.js';
 import {
   botConfigured, botProblem, botSelfCheck, getMember, searchMembers, shapeMember,
   muteMember, unmuteMember, explainDiscordError, MAX_TIMEOUT_MS, botInviteUrl,
@@ -243,6 +244,27 @@ apiRouter.get('/players/:id', requirePerm('db.view'), (req, res) => {
     })),
     knownNames: names.map((n) => n.username),
     possibleAlts: alts.map((a) => ({ robloxId: a.roblox_id, username: a.username, lastSeen: a.last_seen_at })),
+    // A proved link: this person verified ownership themselves, so any other
+    // account they verified is a confirmed alt rather than a guess.
+    identity: (() => {
+      const owner = ownerOf(id);
+      if (!owner) return null;
+      return {
+        discordId: owner.discordId,
+        discordUsername: owner.discordUsername,
+        role: owner.role,
+        roleName: roleInfo(owner.role).name,
+        roleColor: roleInfo(owner.role).color,
+        status: owner.status,
+        verifiedAt: owner.verifiedAt,
+        alsoOwns: owner.alsoOwns.map((a) => ({
+          ...a,
+          banned: !!db
+            .prepare("SELECT 1 AS x FROM punishments WHERE roblox_id = ? AND type='ban' AND active=1")
+            .get(a.robloxId),
+        })),
+      };
+    })(),
   });
 });
 
@@ -371,7 +393,7 @@ apiRouter.get('/appeals', requirePerm('appeals.review'), (req, res) => {
   const status = text(req.query.status, 12) || 'pending';
   const rows = db
     .prepare(
-      `SELECT a.*, p.reason AS ban_reason, p.type AS ban_type, p.expires_at, p.username
+      `SELECT a.*, p.reason AS ban_reason, p.type AS ban_type, p.expires_at, p.username, p.evidence
          FROM appeals a JOIN punishments p ON p.id = a.punishment_id
         WHERE a.status = ? ORDER BY a.created_at DESC LIMIT 200`
     )
@@ -391,8 +413,84 @@ apiRouter.get('/appeals', requirePerm('appeals.review'), (req, res) => {
       expiresAt: a.expires_at,
       handledBy: a.handled_by_name,
       response: a.response,
+      evidence: a.evidence,
+      messages: db.prepare('SELECT COUNT(*) AS n FROM appeal_messages WHERE appeal_id = ?').get(a.id).n,
+      unreadFromPlayer: db
+        .prepare("SELECT COUNT(*) AS n FROM appeal_messages WHERE appeal_id = ? AND author_type = 'player'")
+        .get(a.id).n,
     })),
   });
+});
+
+/** The conversation on one appeal. Moderator and above by default. */
+apiRouter.get('/appeals/:id/messages', requirePerm('appeals.chat'), (req, res) => {
+  const id = int(req.params.id);
+  const appeal = db
+    .prepare(
+      `SELECT a.*, p.reason AS ban_reason, p.evidence, p.expires_at, p.active AS ban_active, p.username
+         FROM appeals a JOIN punishments p ON p.id = a.punishment_id
+        WHERE a.id = ?`
+    )
+    .get(id);
+  if (!appeal) return res.status(404).json({ error: 'not_found' });
+
+  const messages = db.prepare('SELECT * FROM appeal_messages WHERE appeal_id = ? ORDER BY id ASC').all(id);
+
+  res.json({
+    appeal: {
+      id: appeal.id,
+      status: appeal.status,
+      robloxId: appeal.roblox_id,
+      username: appeal.roblox_username || appeal.username,
+      avatar: headshot(appeal.roblox_id),
+      discordId: appeal.discord_id,
+      createdAt: appeal.created_at,
+      closedAt: appeal.closed_at,
+      handledBy: appeal.handled_by_name,
+      response: appeal.response,
+      ban: {
+        reason: appeal.ban_reason,
+        evidence: appeal.evidence,
+        expiresAt: appeal.expires_at,
+        permanent: appeal.expires_at === null,
+        active: !!appeal.ban_active,
+      },
+    },
+    messages: messages.map((m) => {
+      const r = m.author_role ? roleInfo(m.author_role) : null;
+      return {
+        id: m.id,
+        from: m.author_type,
+        // Staff see each other by name; only the appellant sees ranks alone.
+        author: m.author_name,
+        role: m.author_role,
+        roleName: r?.name ?? null,
+        roleColor: r?.color ?? null,
+        body: m.body,
+        at: m.created_at,
+        seenByPlayer: !!m.seen_by_player,
+      };
+    }),
+  });
+});
+
+apiRouter.post('/appeals/:id/messages', requirePerm('appeals.chat'), (req, res) => {
+  const id = int(req.params.id);
+  const appeal = db.prepare('SELECT * FROM appeals WHERE id = ?').get(id);
+  if (!appeal) return res.status(404).json({ error: 'not_found' });
+  if (appeal.status !== 'pending') return res.status(409).json({ error: 'appeal_closed' });
+
+  const body = text(req.body?.body, 2000);
+  if (!body) return res.status(400).json({ error: 'body_required' });
+
+  db.prepare(
+    `INSERT INTO appeal_messages (appeal_id, author_type, user_id, author_name, author_role, body, created_at)
+     VALUES (?, 'staff', ?, ?, ?, ?, ?)`
+  ).run(id, req.user.id, req.user.discord_username, req.user.role, body, now());
+
+  audit(req.user, 'appeal.reply', `appeal:${id}`, body.slice(0, 120), clientIp(req));
+  broadcast({ type: 'appeal_message', appealId: id, from: 'staff' }, 20);
+  res.json({ ok: true });
 });
 
 apiRouter.post('/appeals/:id', requirePerm('appeals.review'), (req, res) => {
@@ -404,9 +502,26 @@ apiRouter.post('/appeals/:id', requirePerm('appeals.review'), (req, res) => {
   if (!appeal) return res.status(404).json({ error: 'not_found' });
   if (appeal.status !== 'pending') return res.status(409).json({ error: 'already_handled' });
 
+  const response = text(req.body?.response, 1000);
+  const t = now();
   db.prepare(
-    'UPDATE appeals SET status = ?, handled_by = ?, handled_by_name = ?, handled_at = ?, response = ? WHERE id = ?'
-  ).run(decision, req.user.id, req.user.discord_username, now(), text(req.body?.response, 1000), id);
+    'UPDATE appeals SET status = ?, handled_by = ?, handled_by_name = ?, handled_at = ?, response = ?, closed_at = ? WHERE id = ?'
+  ).run(decision, req.user.id, req.user.discord_username, t, response, t, id);
+
+  // The verdict belongs in the conversation, so the player sees it in context.
+  db.prepare(
+    `INSERT INTO appeal_messages (appeal_id, author_type, user_id, author_name, author_role, body, created_at)
+     VALUES (?, 'staff', ?, ?, ?, ?, ?)`
+  ).run(
+    id,
+    req.user.id,
+    req.user.discord_username,
+    req.user.role,
+    `${decision === 'accepted' ? 'Appeal accepted - the ban has been lifted.' : 'Appeal denied - the ban stands.'}${response ? `
+
+${response}` : ''}`,
+    t
+  );
 
   if (decision === 'accepted') {
     const r = revokePunishment(appeal.punishment_id, req.user, 'Appeal accepted');

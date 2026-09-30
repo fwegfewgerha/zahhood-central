@@ -255,6 +255,30 @@ export async function playerView(view, robloxId) {
         el('div', { class: 'chips', style: { marginBottom: '16px' } },
           ...data.knownNames.map((name) => el('span', { class: 'pill mute' }, name))));
     }
+    if (data.identity) {
+      const id = data.identity;
+      body.append(
+        el('div', { class: 'k', style: { fontSize: '10.5px', color: 'var(--text-faint)', fontWeight: 600, marginBottom: '6px' } }, 'VERIFIED OWNER'),
+        el('div', { style: { marginBottom: '6px' } },
+          el('b', {}, id.discordUsername),
+          el('span', { class: 'mono muted', style: { fontSize: '11px' } }, ` · ${id.discordId}`)),
+        el('div', { class: 'muted', style: { fontSize: '11.5px', marginBottom: '12px' } },
+          `They proved they own this account ${timeAgo(id.verifiedAt)}.`),
+        id.alsoOwns.length
+          ? el('div', {},
+              el('div', { class: 'k', style: { fontSize: '10.5px', color: 'var(--text-faint)', fontWeight: 600, marginBottom: '6px' } },
+                'CONFIRMED ALTS'),
+              ...id.alsoOwns.map((a) =>
+                el('div', { style: { padding: '4px 0' } },
+                  el('a', { href: `#/player/${a.robloxId}` }, a.username || a.robloxId),
+                  a.banned ? el('span', { class: 'pill err', style: { marginLeft: '6px' } }, 'banned') : null,
+                  el('span', { class: 'muted', style: { fontSize: '11.5px' } }, ` · verified ${timeAgo(a.verifiedAt)}`))),
+              el('div', { class: 'muted', style: { fontSize: '11.5px', marginTop: '8px', marginBottom: '14px' } },
+                'Same person, proved by them. Unlike the fingerprint match below, this is not a guess.'))
+          : el('div', { class: 'muted', style: { fontSize: '12px', marginBottom: '14px' } },
+              'No other Roblox accounts verified by this person.'));
+    }
+
     body.append(el('div', { class: 'k', style: { fontSize: '10.5px', color: 'var(--text-faint)', fontWeight: 600, marginBottom: '6px' } }, 'POSSIBLE ALT ACCOUNTS'));
     if (!data.possibleAlts.length) {
       body.append(el('div', { class: 'muted', style: { fontSize: '13px' } }, 'None detected.'));

@@ -528,80 +528,158 @@ console.log('\nOwner lockout guard');
   }
 }
 
-// --- 16. appeal-only access ---------------------------------------------------
-// A banned player is by definition not whitelisted, so they must be able to
-// sign in far enough to appeal - and no further.
-console.log('\nAppeal-only access');
+// --- 16. the appeal flow ------------------------------------------------------
+// Signing in is required, but the whitelist is not - a banned player is never
+// whitelisted. Ban details stay hidden until they prove the Roblox account is
+// theirs.
+console.log('\nAppeal flow');
 {
   const t = Date.now();
   const APPEAL_DISCORD = '888777666555444333';
+  const ROBLOX = 992001;
   db.prepare('DELETE FROM users WHERE discord_id = ?').run(APPEAL_DISCORD);
-  db.prepare('DELETE FROM whitelist WHERE discord_id = ?').run(APPEAL_DISCORD);
-
+  db.prepare('DELETE FROM punishments WHERE roblox_id = ?').run(ROBLOX);
+  db.prepare('DELETE FROM players WHERE roblox_id = ?').run(ROBLOX);
+  db.prepare('INSERT INTO players (roblox_id, username, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)')
+    .run(ROBLOX, 'banned_player', t, t);
   db.prepare(
-    `INSERT INTO users (discord_id, discord_username, role, created_at, last_login_at, last_seen_at, roblox_user_id, roblox_username)
-     VALUES (?, ?, 'member', ?, ?, ?, ?, ?)`
-  ).run(APPEAL_DISCORD, 'banned_player', t, t, t, 992001, 'banned_player');
+    "INSERT INTO users (discord_id, discord_username, role, created_at, last_login_at, last_seen_at) VALUES (?, 'banned_player', 'member', ?, ?, ?)"
+  ).run(APPEAL_DISCORD, t, t, t);
   const appealUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(APPEAL_DISCORD);
 
   const aSid = crypto.randomBytes(32).toString('base64url');
   db.prepare(
     'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
-  ).run(aSid, appealUser.id, t, t + 3600_000, t, 'smoke-test');
+  ).run(aSid, appealUser.id, t, t + 3600000, t, 'smoke-test');
   const aCookie = `zhc_sid=${aSid}.${crypto.createHmac('sha256', config.sessionSecret).update(aSid).digest('base64url')}`;
-  const asAppealer = (path, body, method = 'GET') =>
+  const asPlayer = (path, body, method = 'GET') =>
     fetch(`${BASE}${path}`, {
       method,
       headers: { 'Content-Type': 'application/json', Cookie: aCookie, Origin: BASE },
       body: body ? JSON.stringify(body) : undefined,
     }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }));
 
-  const me = await asAppealer('/api/me');
-  check('an appeal-only account can read its own session', me.status === 200 && me.data.staff === false);
+  const anon = await fetch(`${BASE}/api/appeal/lookup`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Origin: BASE }, body: '{}',
+  });
+  check('an anonymous visitor cannot look up a ban', anon.status === 401);
 
-  const panelProbe = await asAppealer('/api/stats/live');
-  check('an appeal-only account cannot reach the panel', panelProbe.status === 403);
-  const players = await asAppealer('/api/players');
-  check('an appeal-only account cannot read the player database', players.status === 403);
-  const chatmod = await asAppealer('/api/chatmod');
-  check('an appeal-only account cannot reach chat moderation', chatmod.status === 403);
+  const cfg = await fetch(`${BASE}/api/appeal/config`).then((r) => r.json());
+  check('the appeal config is public', cfg.open === true);
 
-  // Give them a live ban to appeal against.
-  const ban = await panel(`/players/992001/punish`, { type: 'ban', reason: 'appeal flow test', username: 'banned_player' }, 'POST');
-  check('a ban can be placed for the appeal test', ban.status === 200);
+  const unverified = await asPlayer('/api/appeal/lookup', {}, 'POST');
+  check('ban details are hidden until the Roblox account is verified',
+    unverified.status === 403 && unverified.data.error === 'roblox_not_verified');
 
-  const status = await asAppealer('/api/appeal/status');
-  check('the appellant sees their ban', status.status === 200 && status.data.banned === true);
+  const panelProbe = await asPlayer('/api/stats/live');
+  check('an appellant cannot reach the panel', panelProbe.status === 403);
+  const dbProbe = await asPlayer('/api/players');
+  check('an appellant cannot read the player database', dbProbe.status === 403);
 
-  const short = await asAppealer('/api/appeal', { body: 'too short' }, 'POST');
+  // Stand in for a completed profile-description verification.
+  db.prepare('DELETE FROM roblox_links WHERE roblox_id IN (?, ?)').run(ROBLOX, ROBLOX + 1);
+  db.prepare('INSERT INTO roblox_links (user_id, roblox_id, roblox_username, verified_at) VALUES (?, ?, ?, ?)')
+    .run(appealUser.id, ROBLOX, 'banned_player', t);
+  db.prepare('UPDATE users SET roblox_user_id = ?, roblox_username = ?, roblox_verified_at = ? WHERE id = ?')
+    .run(ROBLOX, 'banned_player', t, appealUser.id);
+
+  const noBan = await asPlayer('/api/appeal/lookup', {}, 'POST');
+  check('a verified player with no ban is told so', noBan.status === 200 && noBan.data.banned === false);
+
+  const ban = await panel(`/players/${ROBLOX}/punish`, {
+    type: 'ban', reason: 'appeal flow test', username: 'banned_player',
+    evidence: 'https://example.com/clip.mp4',
+  }, 'POST');
+  check('a ban with evidence can be placed', ban.status === 200);
+  check('the ban carries an appeal code', typeof ban.data.punishment.appealCode === 'string');
+
+  const look = await asPlayer('/api/appeal/lookup', {}, 'POST');
+  check('a verified player sees their ban', look.status === 200 && look.data.banned === true);
+  check('they see the reason', look.data.ban.reason === 'appeal flow test');
+  check('they see the evidence clip', look.data.ban.evidence === 'https://example.com/clip.mp4');
+
+  const short = await asPlayer('/api/appeal/start', { body: 'nope' }, 'POST');
   check('a one-liner appeal is rejected', short.status === 400);
 
-  const filed = await asAppealer('/api/appeal', {
-    body: 'It was my little brother on my account, I have changed my password and it will not happen again.',
+  const filed = await asPlayer('/api/appeal/start', {
+    body: 'It was my little brother on my account. I have changed my password and it will not happen again.',
   }, 'POST');
-  check('the appellant can file an appeal', filed.status === 200);
+  check('the appeal can be filed', filed.status === 200);
 
-  const dupe = await asAppealer('/api/appeal', {
-    body: 'Filing a second time while the first is still pending should be refused.',
-  }, 'POST');
-  check('a second pending appeal is refused', dupe.status === 409);
+  const mine = await asPlayer('/api/appeal/mine');
+  check('the conversation opens with their message',
+    mine.status === 200 && mine.data.appeal.messages.length === 1);
 
   const queue = await panel('/appeals?status=pending');
-  check('staff see the appeal in their queue',
-    queue.status === 200 && queue.data.appeals.some((a) => a.robloxId === 992001));
+  const appealId = queue.data.appeals.find((a) => a.robloxId === ROBLOX)?.id;
+  check('staff see it in the queue', !!appealId);
 
-  const appealId = queue.data.appeals.find((a) => a.robloxId === 992001)?.id;
-  if (appealId) {
-    const decided = await panel(`/appeals/${appealId}`, { decision: 'accepted', response: 'Lifted, do not let it happen again.' }, 'POST');
-    check('accepting an appeal works', decided.status === 200);
-    const after = await asAppealer('/api/appeal/status');
-    check('accepting the appeal lifted the ban', after.data.banned === false);
+  const thread = await panel(`/appeals/${appealId}/messages`);
+  check('staff can open the conversation', thread.status === 200 && thread.data.messages.length === 1);
+
+  const reply = await panel(`/appeals/${appealId}/messages`, { body: 'Which account was your brother on?' }, 'POST');
+  check('staff can reply', reply.status === 200);
+
+  const afterReply = await asPlayer('/api/appeal/mine');
+  check('the player sees the reply', afterReply.data.appeal.messages.length === 2);
+  check('the player sees a rank, not a staff name',
+    afterReply.data.appeal.messages[1].author === 'Gin');
+
+  const playerReply = await asPlayer('/api/appeal/mine/message', { body: 'He does not have his own account.' }, 'POST');
+  check('the player can reply back', playerReply.status === 200);
+
+  const chatMod = db.prepare("SELECT * FROM users WHERE role = 'chat_mod' LIMIT 1").get();
+  if (chatMod) {
+    const lowSid = crypto.randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(lowSid, chatMod.id, t, t + 3600000, t, 'smoke-test');
+    const lc = `zhc_sid=${lowSid}.${crypto.createHmac('sha256', config.sessionSecret).update(lowSid).digest('base64url')}`;
+    const denied = await fetch(`${BASE}/api/appeals/${appealId}/messages`, { headers: { Cookie: lc } });
+    check('a chat mod cannot read the appeal conversation', denied.status === 403);
   }
 
+  const decided = await panel(`/appeals/${appealId}`, { decision: 'accepted', response: 'Lifted. Secure your account.' }, 'POST');
+  check('accepting the appeal works', decided.status === 200);
+
+  const closed = await asPlayer('/api/appeal/mine');
+  check('the verdict lands in the conversation',
+    closed.data.appeal.messages.some((m) => m.body.includes('lifted')));
+  check('the appeal reads as accepted', closed.data.appeal.status === 'accepted');
+  check('the ban is gone', closed.data.appeal.ban.active === false);
+
+  const late = await asPlayer('/api/appeal/mine/message', { body: 'One more thing' }, 'POST');
+  check('a closed appeal refuses new messages', late.status === 409);
+
+  // A second proved account is a confirmed alt, traceable to the same person.
+  const ALT = ROBLOX + 1;
+  db.prepare('INSERT OR IGNORE INTO players (roblox_id, username, first_seen_at, last_seen_at) VALUES (?, ?, ?, ?)')
+    .run(ALT, 'banned_player_alt', t, t);
+  db.prepare('INSERT INTO roblox_links (user_id, roblox_id, roblox_username, verified_at) VALUES (?, ?, ?, ?)')
+    .run(appealUser.id, ALT, 'banned_player_alt', t);
+
+  const both = await asPlayer('/api/appeal/verify/status');
+  check('both linked accounts are listed', both.data.accounts?.length === 2);
+
+  const profile = await panel(`/players/${ALT}`);
+  check('the player profile names the verified owner',
+    profile.data.identity?.discordId === APPEAL_DISCORD);
+  check('the profile lists the confirmed alt',
+    profile.data.identity?.alsoOwns?.some((a) => a.robloxId === ROBLOX));
+
+  const otherDirection = await panel(`/players/${ROBLOX}`);
+  check('the trace works from either account',
+    otherDirection.data.identity?.alsoOwns?.some((a) => a.robloxId === ALT));
+
+  // An account somebody else proved cannot be looked up.
+  const notMine = await asPlayer('/api/appeal/lookup', { robloxId: 123456789 }, 'POST');
+  check('an unlinked account cannot be looked up', notMine.status === 403);
+
+  db.prepare('DELETE FROM roblox_links WHERE user_id = ?').run(appealUser.id);
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(appealUser.id);
   db.prepare('DELETE FROM users WHERE discord_id = ?').run(APPEAL_DISCORD);
-  db.prepare('DELETE FROM punishments WHERE roblox_id = 992001').run();
-  db.prepare('DELETE FROM players WHERE roblox_id = 992001').run();
+  db.prepare('DELETE FROM punishments WHERE roblox_id IN (?, ?)').run(ROBLOX, ALT);
+  db.prepare('DELETE FROM players WHERE roblox_id IN (?, ?)').run(ROBLOX, ALT);
 }
 
 // --- 17. the bot can only mute --------------------------------------------

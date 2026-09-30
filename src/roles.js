@@ -141,7 +141,8 @@ export const PERMISSIONS = {
   'chat.delete':       40,
   'servers.shutdown':  60,
   'audit.view':        40,
-  'appeals.review':    30,
+  'appeals.review':    30,  // accept or deny
+  'appeals.chat':      20,  // read and reply in the appeal conversation
   'staff.view':        10,
   'chatmod.view':      10,  // the chat moderation section
   'chatmod.mute':      10,  // time someone out in the Discord server
@@ -187,6 +188,7 @@ export const PERMISSION_META = {
   'punish.revoke':     { category: 'Moderation', label: 'Lift punishments', desc: 'Still only ones issued by a rank below their own.' },
   'punish.viewAll':    { category: 'Moderation', label: 'See all casework', desc: 'Without this they only see punishments they issued themselves.' },
   'appeals.review':    { category: 'Moderation', label: 'Rule on ban appeals', desc: 'Accept or deny appeals from banned players.' },
+  'appeals.chat':      { category: 'Moderation', label: 'Talk to appellants', desc: 'Read and reply in the appeal conversation. Moderator and above by default.' },
 
   'chat.read':         { category: 'Staff chat', label: 'Read staff chat', desc: 'Individual rooms are still gated by rank on top of this.' },
   'chat.write':        { category: 'Staff chat', label: 'Post in staff chat' },
