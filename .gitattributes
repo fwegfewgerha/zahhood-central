@@ -1,0 +1,16 @@
+# Keep LF endings for anything that runs inside a Linux container.
+# A shell script checked out with CRLF fails with "bad interpreter: /bin/sh^M".
+* text=auto eol=lf
+
+*.sh        text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.js        text eol=lf
+*.json      text eol=lf
+*.lua       text eol=lf
+
+# Binary
+*.db        binary
+*.png       binary
+*.jpg       binary
