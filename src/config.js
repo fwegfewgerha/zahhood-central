@@ -40,6 +40,8 @@ export const config = {
     ownerId: env.OWNER_DISCORD_ID || '',
     // The website owner. Outranks the Game Owner and is granted here alone.
     ginId: env.GIN_DISCORD_ID || '',
+    // Bot token, used only to apply chat mutes in your Discord server.
+    botToken: env.DISCORD_BOT_TOKEN || '',
   },
 
   roblox: {

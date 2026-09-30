@@ -1,6 +1,7 @@
 import express from 'express';
 import { config } from '../config.js';
-import { db, now, audit, isWhitelistEnabled, isWhitelisted } from '../db.js';
+import { db, now, audit, isWhitelistEnabled, isWhitelisted, getSetting } from '../db.js';
+import { isStaff } from '../roles.js';
 import { tooManyFailedLogins, noteFailedLogin, clientIpOf } from '../security.js';
 import {
   discordAuthorizeUrl,
@@ -17,6 +18,11 @@ import {
 import { activeBan, punishmentsFor } from '../moderation.js';
 
 export const authRouter = express.Router();
+
+/** Whether somebody who is not whitelisted may sign in to file an appeal. */
+export function appealsOpen() {
+  return getSetting('appeals_open', '1') === '1';
+}
 
 function fail(res, code, detail) {
   const url = `/?error=${encodeURIComponent(code)}${detail ? `&detail=${encodeURIComponent(detail)}` : ''}`;
@@ -56,14 +62,33 @@ authRouter.get('/discord/callback', async (req, res) => {
 
     // Gate 1: the whitelist. The configured owner is always allowed through
     // so an empty list can never lock the site's own owner out.
+    //
+    // A banned player has to be able to reach the appeal form, and by
+    // definition they are not whitelisted. So somebody who fails the
+    // whitelist may still sign in when appeals are open - but only ever as
+    // an ordinary member, and the panel is closed to them exactly as before.
+    let appealOnly = false;
     if (isWhitelistEnabled() && !isOwner && !isWhitelisted(profile.id)) {
-      noteFailedLogin({ discordId: profile.id, username: profile.username, ip, reason: 'not_whitelisted' });
-      audit(null, 'security.login_rejected', `discord:${profile.id}`, `${profile.username} is not whitelisted`, ip);
-      return fail(res, 'not_whitelisted');
+      const existing = db.prepare('SELECT role FROM users WHERE discord_id = ?').get(profile.id);
+
+      // Someone holding a staff role who is no longer whitelisted has had
+      // their access revoked. That must stay a hard block: letting them back
+      // in "for appeals" would hand them the panel again.
+      const hasStaffRole = !!existing && isStaff(existing.role);
+
+      if (appealsOpen() && !hasStaffRole) {
+        appealOnly = true;
+      } else {
+        noteFailedLogin({ discordId: profile.id, username: profile.username, ip, reason: 'not_whitelisted' });
+        audit(null, 'security.login_rejected', `discord:${profile.id}`, `${profile.username} is not whitelisted`, ip);
+        return fail(res, 'not_whitelisted');
+      }
     }
 
     // Gate 2: optional Discord server membership.
-    if (config.discord.guildId) {
+    // Someone appealing a ban may well have been thrown out of the Discord
+    // too, so this gate does not apply to them.
+    if (config.discord.guildId && !appealOnly) {
       let guilds = [];
       try {
         guilds = await discordGet('/users/@me/guilds', token.access_token);
@@ -84,6 +109,10 @@ authRouter.get('/discord/callback', async (req, res) => {
     }
 
     createSession(res, user, req);
+    if (appealOnly) {
+      audit(user, 'auth.login_appeal_only', `user:${user.id}`, null, ip);
+      return res.redirect('/appeal');
+    }
     res.redirect(st.returnTo || '/panel');
   } catch (err) {
     console.error('[auth] callback failed:', err.message);

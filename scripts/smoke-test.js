@@ -528,6 +528,82 @@ console.log('\nOwner lockout guard');
   }
 }
 
+// --- 16. appeal-only access ---------------------------------------------------
+// A banned player is by definition not whitelisted, so they must be able to
+// sign in far enough to appeal - and no further.
+console.log('\nAppeal-only access');
+{
+  const t = Date.now();
+  const APPEAL_DISCORD = '888777666555444333';
+  db.prepare('DELETE FROM users WHERE discord_id = ?').run(APPEAL_DISCORD);
+  db.prepare('DELETE FROM whitelist WHERE discord_id = ?').run(APPEAL_DISCORD);
+
+  db.prepare(
+    `INSERT INTO users (discord_id, discord_username, role, created_at, last_login_at, last_seen_at, roblox_user_id, roblox_username)
+     VALUES (?, ?, 'member', ?, ?, ?, ?, ?)`
+  ).run(APPEAL_DISCORD, 'banned_player', t, t, t, 992001, 'banned_player');
+  const appealUser = db.prepare('SELECT * FROM users WHERE discord_id = ?').get(APPEAL_DISCORD);
+
+  const aSid = crypto.randomBytes(32).toString('base64url');
+  db.prepare(
+    'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+  ).run(aSid, appealUser.id, t, t + 3600_000, t, 'smoke-test');
+  const aCookie = `zhc_sid=${aSid}.${crypto.createHmac('sha256', config.sessionSecret).update(aSid).digest('base64url')}`;
+  const asAppealer = (path, body, method = 'GET') =>
+    fetch(`${BASE}${path}`, {
+      method,
+      headers: { 'Content-Type': 'application/json', Cookie: aCookie, Origin: BASE },
+      body: body ? JSON.stringify(body) : undefined,
+    }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }));
+
+  const me = await asAppealer('/api/me');
+  check('an appeal-only account can read its own session', me.status === 200 && me.data.staff === false);
+
+  const panelProbe = await asAppealer('/api/stats/live');
+  check('an appeal-only account cannot reach the panel', panelProbe.status === 403);
+  const players = await asAppealer('/api/players');
+  check('an appeal-only account cannot read the player database', players.status === 403);
+  const chatmod = await asAppealer('/api/chatmod');
+  check('an appeal-only account cannot reach chat moderation', chatmod.status === 403);
+
+  // Give them a live ban to appeal against.
+  const ban = await panel(`/players/992001/punish`, { type: 'ban', reason: 'appeal flow test', username: 'banned_player' }, 'POST');
+  check('a ban can be placed for the appeal test', ban.status === 200);
+
+  const status = await asAppealer('/api/appeal/status');
+  check('the appellant sees their ban', status.status === 200 && status.data.banned === true);
+
+  const short = await asAppealer('/api/appeal', { body: 'too short' }, 'POST');
+  check('a one-liner appeal is rejected', short.status === 400);
+
+  const filed = await asAppealer('/api/appeal', {
+    body: 'It was my little brother on my account, I have changed my password and it will not happen again.',
+  }, 'POST');
+  check('the appellant can file an appeal', filed.status === 200);
+
+  const dupe = await asAppealer('/api/appeal', {
+    body: 'Filing a second time while the first is still pending should be refused.',
+  }, 'POST');
+  check('a second pending appeal is refused', dupe.status === 409);
+
+  const queue = await panel('/appeals?status=pending');
+  check('staff see the appeal in their queue',
+    queue.status === 200 && queue.data.appeals.some((a) => a.robloxId === 992001));
+
+  const appealId = queue.data.appeals.find((a) => a.robloxId === 992001)?.id;
+  if (appealId) {
+    const decided = await panel(`/appeals/${appealId}`, { decision: 'accepted', response: 'Lifted, do not let it happen again.' }, 'POST');
+    check('accepting an appeal works', decided.status === 200);
+    const after = await asAppealer('/api/appeal/status');
+    check('accepting the appeal lifted the ban', after.data.banned === false);
+  }
+
+  db.prepare('DELETE FROM sessions WHERE user_id = ?').run(appealUser.id);
+  db.prepare('DELETE FROM users WHERE discord_id = ?').run(APPEAL_DISCORD);
+  db.prepare('DELETE FROM punishments WHERE roblox_id = 992001').run();
+  db.prepare('DELETE FROM players WHERE roblox_id = 992001').run();
+}
+
 // --- cleanup --------------------------------------------------------------
 db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
 db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();

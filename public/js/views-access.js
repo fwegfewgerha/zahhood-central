@@ -38,6 +38,14 @@ export async function accessView(view) {
         bad: 'Not set - membership of your Discord is not required',
       },
       {
+        label: 'Ban appeals',
+        on: s.appealsOpen,
+        good: `Banned players can sign in to appeal${s.pendingAppeals ? ` · ${s.pendingAppeals} waiting` : ''}`,
+        bad: 'CLOSED - nobody outside the whitelist can sign in, so nobody can appeal',
+        toggle: can('settings.manage'),
+        action: 'appeals',
+      },
+      {
         label: 'Game Owner source',
         on: s.ownerConfigured,
         good: 'Set from the server environment file only',
@@ -65,7 +73,7 @@ export async function accessView(view) {
           r.toggle
             ? el('button', {
                 class: `btn sm ${r.on ? 'danger' : 'primary'}`,
-                onclick: () => toggleWhitelist(!r.on),
+                onclick: () => (r.action === 'appeals' ? toggleAppeals(!r.on) : toggleWhitelist(!r.on)),
               }, r.on ? 'Turn off' : 'Turn on')
             : null)
       );
@@ -110,6 +118,22 @@ export async function accessView(view) {
     try {
       await api('/whitelist/enabled', { method: 'POST', body: { enabled } });
       toast(enabled ? 'Whitelist is on.' : 'Whitelist is off.', enabled ? 'ok' : 'err');
+      accessView(view);
+    } catch (err) { toast(errMessage(err), 'err'); }
+  }
+
+  async function toggleAppeals(open) {
+    if (!open) {
+      const ok = await confirmDialog(
+        'Close ban appeals',
+        'Banned players will no longer be able to sign in at all, so nobody can file an appeal. Appeals already submitted stay where they are.',
+        'Close appeals'
+      );
+      if (!ok) return;
+    }
+    try {
+      await api('/appeals/open', { method: 'POST', body: { open } });
+      toast(open ? 'Appeals are open.' : 'Appeals are closed.', open ? 'ok' : 'err');
       accessView(view);
     } catch (err) { toast(errMessage(err), 'err'); }
   }

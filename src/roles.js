@@ -143,6 +143,9 @@ export const PERMISSIONS = {
   'audit.view':        40,
   'appeals.review':    30,
   'staff.view':        10,
+  'chatmod.view':      10,  // the chat moderation section
+  'chatmod.mute':      10,  // time someone out in the Discord server
+  'chatmod.unmute':    10,  // lift a mute (only one from a lower rank)
   'staff.manage':      70,  // promote / demote, always strictly below your own rank
   'staff.remove':      70,
   'apikeys.view':      70,
@@ -189,6 +192,10 @@ export const PERMISSION_META = {
   'chat.write':        { category: 'Staff chat', label: 'Post in staff chat' },
   'chat.delete':       { category: 'Staff chat', label: 'Delete messages', desc: 'Still only messages from ranks below their own.' },
 
+  'chatmod.view':      { category: 'Chat moderation', label: 'Open chat moderation', desc: 'The Discord mute tools. Chat Moderator is the lowest rank that has this by default.' },
+  'chatmod.mute':      { category: 'Chat moderation', label: 'Mute in Discord', desc: 'Times the person out in your Discord server. Discord never shows who ordered it.' },
+  'chatmod.unmute':    { category: 'Chat moderation', label: 'Lift a Discord mute', desc: 'Still only mutes issued by a rank below their own.' },
+
   'servers.shutdown':  { category: 'Servers', label: 'Shut down a server', desc: 'Disconnects everyone inside it.', danger: true },
 
   'staff.manage':      { category: 'Team', label: 'Promote and demote', desc: 'Always limited to ranks strictly below their own.', danger: true },
@@ -208,7 +215,7 @@ export const PERMISSION_META = {
 };
 
 export const PERMISSION_CATEGORIES = [
-  'Access', 'Player database', 'Moderation', 'Staff chat', 'Servers', 'Team', 'Administration', 'Owner only',
+  'Access', 'Player database', 'Moderation', 'Chat moderation', 'Staff chat', 'Servers', 'Team', 'Administration', 'Owner only',
 ];
 
 // ---------------------------------------------------------------

@@ -10,6 +10,7 @@ import { chatView, staffView, keysView, auditView, appealsView } from './views-t
 import { accessView } from './views-access.js';
 import { permissionsView } from './views-perms.js';
 import { trafficView, visitorView } from './views-traffic.js';
+import { chatmodView } from './views-chatmod.js';
 
 const ROUTES = {
   '': { title: 'Dashboard', render: dashboardView },
@@ -20,6 +21,7 @@ const ROUTES = {
   'server': { title: 'Server', render: serverView },
   'chat': { title: 'Staff Chat', render: chatView, flush: true },
   'appeals': { title: 'Ban Appeals', render: appealsView },
+  'chatmod': { title: 'Chat Moderation', render: chatmodView },
   'staff': { title: 'Staff Team', render: staffView },
   'keys': { title: 'Game Connection', render: keysView },
   'access': { title: 'Access & Security', render: accessView },
@@ -43,6 +45,7 @@ const NAV = [
       { href: '#/players', ico: '▦', text: 'Player Database', perm: 'db.view' },
       { href: '#/punishments', ico: '⛔', text: 'Punishments', perm: 'db.view' },
       { href: '#/appeals', ico: '⚖', text: 'Appeals', perm: 'appeals.review', badge: 'pendingAppeals' },
+      { href: '#/chatmod', ico: '♪', text: 'Chat Moderation', perm: 'chatmod.view' },
     ],
   },
   {

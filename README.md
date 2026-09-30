@@ -25,6 +25,7 @@ a ban issued on the website lands on a live server within one heartbeat.
 | Rejected sign-ins, active sessions, posture checks | Access & Security |
 | Owner-editable rank names and colours | Staff Team |
 | Owner-editable permission matrix, per rank | Rank Permissions |
+| Anonymous Discord chat mutes | Chat Moderation |
 
 ---
 
@@ -93,6 +94,44 @@ or the Game Owner gives them a staff role from the **Staff Team** page.
 > you are never locked out. Set it properly before the site is public.
 
 ---
+
+## Chat moderation
+
+**Chat Moderation** is open to Chat Moderator and every rank above. Look
+somebody up in your Discord server by name or user ID, and time them out for
+anything from a minute to Discord's 28-day maximum.
+
+The moderator stays anonymous *inside Discord*:
+
+- Discord records the **bot** as the account that applied the timeout
+- the audit-log reason is a fixed string, so it carries nothing identifying
+- the real name is kept on this site, where staff and the audit log can see it
+
+So the server sees a mute with no author, while your team stays accountable to
+each other. Normal rank rules still apply: you cannot mute somebody who
+outranks you, you cannot mute yourself, and you can only lift a mute issued by
+a rank below your own.
+
+Needs `DISCORD_BOT_TOKEN` set, the bot in your server with **Moderate
+Members**, and the bot's role above the people being muted. Without the token
+the page loads and explains what is missing rather than failing.
+
+## Appeals
+
+Anyone can appeal, whitelist or not - which matters, because a banned player
+is never on the whitelist. Pressing **Appeal a ban** on the landing page signs
+them in with Discord and drops them on the appeal form.
+
+Such an account is deliberately limited: it is an ordinary member, the panel
+and every staff API refuse it, and the Discord-server requirement is skipped
+since a banned player may have been removed from the Discord too. All it can
+do is state which Roblox account is theirs and write an appeal.
+
+One exception, on purpose: an account that **holds a staff role but is no
+longer whitelisted** is still refused outright. That is an access revocation,
+and letting it back in "for appeals" would hand back the panel.
+
+Gin or a Co-Owner can close appeals entirely from **Access & Security**.
 
 ## Access control
 

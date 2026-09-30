@@ -95,6 +95,11 @@ export const ERRORS = {
   bad_origin: 'That request was blocked as cross-site. Reload the page and try again.',
   rate_limited: 'You are going too fast. Wait a moment.',
   unknown_role: 'No such role.',
+  bot_not_configured: 'The Discord bot is not set up on the server yet, so muting is unavailable.',
+  discord_error: 'Discord refused the request.',
+  duration_required: 'Pick how long the mute should last.',
+  cannot_mute_yourself: 'You cannot mute yourself.',
+  query_required: 'Type a name or user ID to search for.',
 };
 
 export function errMessage(err) {

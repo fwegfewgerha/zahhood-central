@@ -1,5 +1,5 @@
 import express from 'express';
-import { db, now, audit, jsonOr, isWhitelistEnabled, setSetting } from '../db.js';
+import { db, now, audit, jsonOr, isWhitelistEnabled, setSetting, getSetting } from '../db.js';
 import { config, SITE } from '../config.js';
 import { publicUser, requireLogin, requireStaff, requirePerm, avatarUrl, clientIp } from '../auth.js';
 import {
@@ -21,6 +21,10 @@ import {
 } from '../moderation.js';
 import { createKey, listKeys, revokeKey } from '../apikeys.js';
 import { auditConfiguration } from '../security.js';
+import {
+  botConfigured, botProblem, botSelfCheck, getMember, searchMembers, shapeMember,
+  muteMember, unmuteMember, explainDiscordError, MAX_TIMEOUT_MS,
+} from '../discordbot.js';
 
 export const apiRouter = express.Router();
 
@@ -738,6 +742,157 @@ apiRouter.delete('/apikeys/:id', requirePerm('apikeys.manage'), (req, res) => {
 });
 
 // ---------------------------------------------------------------
+// chat moderation - Discord mutes, anonymous inside the server
+// ---------------------------------------------------------------
+function shapeMute(m) {
+  const r = m.issued_by_role ? roleInfo(m.issued_by_role) : null;
+  return {
+    id: m.id,
+    discordId: m.discord_id,
+    name: m.discord_name,
+    reason: m.reason,
+    issuedBy: m.issued_by_name,
+    issuedById: m.issued_by,
+    issuedByRole: m.issued_by_role,
+    issuedByRoleName: r?.name ?? null,
+    issuedByRoleColor: r?.color ?? null,
+    issuedAt: m.issued_at,
+    expiresAt: m.expires_at,
+    active: !!m.active,
+    revokedBy: m.revoked_by_name,
+    revokedAt: m.revoked_at,
+    revokeReason: m.revoke_reason,
+    delivered: !!m.delivered,
+    error: m.delivery_error,
+  };
+}
+
+/** Expire mutes whose clock has run out. Discord lifts its own timeout. */
+function expireMutes() {
+  db.prepare('UPDATE chat_mutes SET active = 0 WHERE active = 1 AND expires_at IS NOT NULL AND expires_at <= ?')
+    .run(now());
+}
+
+apiRouter.get('/chatmod', requirePerm('chatmod.view'), async (req, res) => {
+  expireMutes();
+  const active = db.prepare('SELECT * FROM chat_mutes WHERE active = 1 ORDER BY issued_at DESC LIMIT 100').all();
+  const recent = db.prepare('SELECT * FROM chat_mutes ORDER BY issued_at DESC LIMIT 100').all();
+
+  res.json({
+    bot: botConfigured() ? await botSelfCheck() : { ok: false, error: botProblem() },
+    maxDurationMs: MAX_TIMEOUT_MS,
+    active: active.map(shapeMute),
+    history: recent.map(shapeMute),
+    stats: {
+      activeCount: active.length,
+      last24h: db.prepare('SELECT COUNT(*) AS n FROM chat_mutes WHERE issued_at > ?').get(now() - 864e5).n,
+      mine: db.prepare('SELECT COUNT(*) AS n FROM chat_mutes WHERE issued_by = ?').get(req.user.id).n,
+    },
+  });
+});
+
+/** Look somebody up in the Discord server before muting them. */
+apiRouter.get('/chatmod/lookup', requirePerm('chatmod.view'), async (req, res) => {
+  if (!botConfigured()) return res.status(503).json({ error: 'bot_not_configured', detail: botProblem() });
+  const q = text(req.query.q, 80);
+  if (!q) return res.status(400).json({ error: 'query_required' });
+
+  try {
+    // A bare snowflake is a direct lookup; anything else is a name search.
+    if (/^\d{17,20}$/.test(q)) {
+      const member = shapeMember(await getMember(q));
+      return res.json({ members: member ? [member] : [] });
+    }
+    const found = await searchMembers(q, 10);
+    res.json({ members: (found || []).map(shapeMember).filter(Boolean) });
+  } catch (err) {
+    if (err.status === 404) return res.json({ members: [] });
+    res.status(502).json({ error: 'discord_error', detail: explainDiscordError(err) });
+  }
+});
+
+apiRouter.post('/chatmod/mute', requirePerm('chatmod.mute'), async (req, res) => {
+  if (!botConfigured()) return res.status(503).json({ error: 'bot_not_configured', detail: botProblem() });
+
+  const discordId = text(req.body?.discordId, 24);
+  if (!discordId || !/^\d{17,20}$/.test(discordId)) return res.status(400).json({ error: 'bad_discord_id' });
+
+  const reason = text(req.body?.reason, 500);
+  if (!reason) return res.status(400).json({ error: 'reason_required' });
+
+  const durationMs = parseDuration(req.body?.duration);
+  if (!durationMs || durationMs <= 0) return res.status(400).json({ error: 'duration_required' });
+
+  // Never let a chat mod mute somebody who outranks them on the site.
+  const targetStaff = db.prepare('SELECT role, discord_username FROM users WHERE discord_id = ?').get(discordId);
+  if (targetStaff && !outranks(req.user.role, targetStaff.role)) {
+    return res.status(403).json({ error: 'target_outranks_you', targetRole: targetStaff.role });
+  }
+  if (discordId === req.user.discord_id) return res.status(400).json({ error: 'cannot_mute_yourself' });
+
+  let name = text(req.body?.name, 60) || targetStaff?.discord_username || null;
+  let applied;
+  try {
+    const member = await getMember(discordId).catch(() => null);
+    if (member) name = shapeMember(member)?.displayName || name;
+    applied = await muteMember(discordId, durationMs);
+  } catch (err) {
+    return res.status(502).json({ error: 'discord_error', detail: explainDiscordError(err) });
+  }
+
+  const t = now();
+  // Any existing mute for this person is superseded.
+  db.prepare('UPDATE chat_mutes SET active = 0 WHERE discord_id = ? AND active = 1').run(discordId);
+
+  const info = db
+    .prepare(
+      `INSERT INTO chat_mutes
+         (discord_id, discord_name, reason, issued_by, issued_by_name, issued_by_role,
+          issued_at, expires_at, active, delivered)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1)`
+    )
+    .run(discordId, name, reason, req.user.id, req.user.discord_username, req.user.role, t, applied.until);
+
+  audit(req.user, 'chatmod.mute', `discord:${discordId}`, `${reason} (until ${new Date(applied.until).toISOString()})`, clientIp(req));
+
+  const mute = shapeMute(db.prepare('SELECT * FROM chat_mutes WHERE id = ?').get(Number(info.lastInsertRowid)));
+  broadcast({ type: 'chat_mute', mute }, 10);
+
+  res.json({ ok: true, mute, cappedTo28Days: applied.capped });
+});
+
+apiRouter.post('/chatmod/unmute/:id', requirePerm('chatmod.unmute'), async (req, res) => {
+  const mute = db.prepare('SELECT * FROM chat_mutes WHERE id = ?').get(int(req.params.id));
+  if (!mute) return res.status(404).json({ error: 'not_found' });
+  if (!mute.active) return res.status(409).json({ error: 'already_inactive' });
+
+  // Same rule as punishments: you can only undo a lower rank's work.
+  const issuerRank = mute.issued_by_role ? rankOf(mute.issued_by_role) : 0;
+  if (issuerRank >= rankOf(req.user.role) && mute.issued_by !== req.user.id) {
+    return res.status(403).json({ error: 'outranked', issuedByRole: mute.issued_by_role });
+  }
+
+  if (botConfigured()) {
+    try {
+      await unmuteMember(mute.discord_id);
+    } catch (err) {
+      // A member who left the server cannot be un-timed-out, and that is fine.
+      if (err.status !== 404) {
+        return res.status(502).json({ error: 'discord_error', detail: explainDiscordError(err) });
+      }
+    }
+  }
+
+  db.prepare(
+    'UPDATE chat_mutes SET active = 0, revoked_by = ?, revoked_by_name = ?, revoked_at = ?, revoke_reason = ? WHERE id = ?'
+  ).run(req.user.id, req.user.discord_username, now(), text(req.body?.reason, 300), mute.id);
+
+  audit(req.user, 'chatmod.unmute', `discord:${mute.discord_id}`, text(req.body?.reason, 200), clientIp(req));
+  broadcast({ type: 'chat_unmute', id: mute.id }, 10);
+  res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------
 // whitelist - who is allowed to sign in at all
 // ---------------------------------------------------------------
 apiRouter.get('/whitelist', requirePerm('whitelist.view'), (req, res) => {
@@ -808,6 +963,13 @@ apiRouter.delete('/whitelist/:discordId', requirePerm('whitelist.manage'), (req,
 
   audit(req.user, 'whitelist.remove', `discord:${discordId}`, null, clientIp(req));
   res.json({ ok: true, removed: info.changes > 0 });
+});
+
+apiRouter.post('/appeals/open', requirePerm('settings.manage'), (req, res) => {
+  const open = req.body?.open === true || req.body?.open === '1';
+  setSetting('appeals_open', open ? '1' : '0', req.user);
+  audit(req.user, 'settings.appeals_open', null, open ? 'on' : 'off', clientIp(req));
+  res.json({ ok: true, open });
 });
 
 apiRouter.post('/whitelist/enabled', requirePerm('settings.manage'), (req, res) => {
@@ -1095,6 +1257,8 @@ apiRouter.get('/security', requirePerm('security.view'), (req, res) => {
   res.json({
     config: auditConfiguration(),
     whitelistEnabled: isWhitelistEnabled(),
+    appealsOpen: getSetting('appeals_open', '1') === '1',
+    pendingAppeals: db.prepare("SELECT COUNT(*) AS n FROM appeals WHERE status = 'pending'").get().n,
     whitelistCount: db.prepare('SELECT COUNT(*) AS n FROM whitelist').get().n,
     guildLock: config.discord.guildId || null,
     ownerConfigured: !!config.discord.ownerId,

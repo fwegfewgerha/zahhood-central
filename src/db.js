@@ -272,6 +272,30 @@ CREATE TABLE IF NOT EXISTS role_permissions (
   PRIMARY KEY (role_key, permission)
 );
 
+-- Discord chat mutes, applied to your Discord server by the bot.
+-- The moderator is recorded here but never sent to Discord, so a timeout
+-- cannot be traced back to whoever ordered it from inside the server.
+CREATE TABLE IF NOT EXISTS chat_mutes (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  discord_id      TEXT    NOT NULL,
+  discord_name    TEXT,
+  reason          TEXT    NOT NULL,
+  issued_by       INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  issued_by_name  TEXT,
+  issued_by_role  TEXT,
+  issued_at       INTEGER NOT NULL,
+  expires_at      INTEGER,
+  active          INTEGER NOT NULL DEFAULT 1,
+  revoked_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  revoked_by_name TEXT,
+  revoked_at      INTEGER,
+  revoke_reason   TEXT,
+  delivered       INTEGER NOT NULL DEFAULT 0,
+  delivery_error  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_mutes_user   ON chat_mutes(discord_id, active);
+CREATE INDEX IF NOT EXISTS idx_mutes_issued ON chat_mutes(issued_at DESC);
+
 -- Website traffic: which pages signed-in people opened, and when.
 CREATE TABLE IF NOT EXISTS page_views (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -340,6 +364,8 @@ addColumnIfMissing('sessions', 'last_used_at', 'INTEGER');
 // the configured OWNER_DISCORD_ID until that owner adds people by hand.
 const DEFAULT_SETTINGS = {
   whitelist_enabled: '1',
+  // Lets a banned player sign in far enough to file an appeal, and no further.
+  appeals_open: '1',
 };
 const settingInsert = db.prepare('INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)');
 for (const [key, value] of Object.entries(DEFAULT_SETTINGS)) {

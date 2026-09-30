@@ -1,0 +1,280 @@
+// ============================================================
+// Chat moderation - Discord mutes.
+// Visible to Chat Moderator and every rank above.
+// ============================================================
+import {
+  state, el, clear, api, toast, errMessage, can, modal, confirmDialog,
+  n, timeAgo, dateTime, duration, roleBadge, on,
+} from './core.js';
+
+const DURATIONS = [
+  ['60s', '1 minute'],
+  ['5m', '5 minutes'],
+  ['10m', '10 minutes'],
+  ['1h', '1 hour'],
+  ['6h', '6 hours'],
+  ['1d', '1 day'],
+  ['7d', '1 week'],
+  ['28d', '28 days (Discord maximum)'],
+];
+
+export async function chatmodView(view) {
+  let data = await api('/chatmod');
+
+  const render = () => {
+    clear(view).append(
+      botCard(),
+      el('div', { style: { height: '14px' } }),
+      el('div', { class: 'grid stats' },
+        stat('Muted right now', n(data.stats.activeCount), 'active Discord timeouts', 'warn'),
+        stat('Mutes today', n(data.stats.last24h), 'across the whole team'),
+        stat('Issued by you', n(data.stats.mine), 'all time')),
+      el('div', { style: { height: '14px' } }),
+      lookupCard(),
+      el('div', { style: { height: '14px' } }),
+      activeCard(),
+      el('div', { style: { height: '14px' } }),
+      historyCard(),
+      el('div', { style: { height: '14px' } }),
+      anonymityNote()
+    );
+  };
+
+  // ---------------- bot status ----------------
+  function botCard() {
+    const b = data.bot;
+    const body = el('div', { class: 'card-body' });
+
+    if (b.ok) {
+      body.append(el('div', { class: 'kv' },
+        kv('Bot', b.bot.username),
+        kv('Server', b.guild.name),
+        kv('Status', el('span', { class: 'pill ok' }, 'connected'))));
+    } else {
+      body.append(
+        el('div', { class: 'alert', style: { marginBottom: '12px' } },
+          el('b', {}, 'The bot is not usable yet. '), b.error || 'Unknown problem.'),
+        el('div', { class: 'muted', style: { fontSize: '12.5px' } },
+          'Muting needs a Discord bot token on the server. Add ', el('span', { class: 'mono' }, 'DISCORD_BOT_TOKEN'),
+          ' to the environment, invite the bot to your server, and give it the ',
+          el('b', {}, 'Moderate Members'), ' permission. Its role also has to sit above anyone you want to mute.'));
+    }
+
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, 'Discord connection'),
+        el('div', { class: 'spacer' }),
+        b.ok ? el('span', { class: 'pill ok' }, 'ready') : el('span', { class: 'pill err' }, 'not ready')),
+      body);
+  }
+
+  // ---------------- lookup + mute ----------------
+  function lookupCard() {
+    const input = el('input', {
+      type: 'text',
+      placeholder: 'Discord username or user ID…',
+      onkeydown: (e) => { if (e.key === 'Enter') doLookup(); },
+    });
+    const results = el('div', { class: 'card-body tight' });
+
+    async function doLookup() {
+      const q = input.value.trim();
+      if (!q) return;
+      clear(results).append(el('div', { class: 'loading' }, 'Searching Discord…'));
+      try {
+        const found = await api(`/chatmod/lookup?q=${encodeURIComponent(q)}`);
+        clear(results);
+        if (!found.members.length) {
+          results.append(el('div', { class: 'empty' },
+            el('div', {}, 'Nobody in your Discord server matches that.'),
+            el('div', { class: 'muted', style: { fontSize: '12px', marginTop: '6px' } },
+              'Searching by name needs an exact-ish match. A user ID always works.')));
+          return;
+        }
+        const t = el('table');
+        const tb = el('tbody');
+        for (const m of found.members) {
+          tb.append(el('tr', {},
+            el('td', {}, el('div', { class: 'user-cell' },
+              el('img', { src: m.avatar, alt: '', style: { borderRadius: '50%' } }),
+              el('div', { class: 'n' },
+                el('b', {}, m.displayName),
+                el('span', {}, `@${m.username}`)))),
+            el('td', { class: 'mono muted', style: { fontSize: '11.5px' } }, m.discordId),
+            el('td', {}, m.timedOutUntil
+              ? el('span', { class: 'pill warnp' }, `muted · ${duration(m.timedOutUntil - Date.now())} left`)
+              : el('span', { class: 'pill ok' }, 'not muted')),
+            el('td', { class: 'right' },
+              can('chatmod.mute') && data.bot.ok
+                ? el('button', { class: 'btn sm danger', onclick: () => muteDialog(m) }, 'Mute')
+                : null)));
+        }
+        t.append(tb);
+        results.append(t);
+      } catch (err) {
+        clear(results).append(el('div', { class: 'empty' }, el('div', {}, errMessage(err))));
+      }
+    }
+
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-head' }, el('h3', {}, 'Find someone')),
+      el('div', { class: 'card-body', style: { paddingBottom: '0' } },
+        el('div', { class: 'toolbar', style: { marginBottom: '12px' } },
+          input,
+          el('button', { class: 'btn primary', onclick: doLookup, disabled: !data.bot.ok }, 'Search'))),
+      results);
+  }
+
+  function muteDialog(member) {
+    const reason = el('textarea', { rows: 3, placeholder: 'Why are they being muted? Staff see this; Discord does not.' });
+    const dur = el('select', {}, ...DURATIONS.map(([v, label]) => el('option', { value: v }, label)));
+    dur.value = '10m';
+
+    modal({
+      title: `Mute ${member.displayName}`,
+      body: el('div', {},
+        el('div', { style: { display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '16px' } },
+          el('img', { src: member.avatar, alt: '', style: { width: '44px', height: '44px', borderRadius: '50%' } }),
+          el('div', {},
+            el('b', {}, member.displayName),
+            el('div', { class: 'mono muted', style: { fontSize: '11.5px' } }, member.discordId))),
+        el('label', { class: 'field' }, el('span', {}, 'Duration'), dur),
+        el('label', { class: 'field' }, el('span', {}, 'Reason'), reason),
+        el('div', {
+          style: {
+            fontSize: '12px', padding: '10px 12px', borderRadius: '8px',
+            background: 'rgba(74,168,255,.08)', border: '1px solid rgba(74,168,255,.25)', color: '#a9d4ff',
+          },
+        },
+          el('b', {}, 'You stay anonymous. '),
+          'Discord records the bot as the one who muted them. Your name is kept here, where staff can see it, and is never sent to Discord.')),
+      actions: [
+        { label: 'Cancel' },
+        {
+          kind: 'danger',
+          label: 'Mute',
+          onClick: async () => {
+            const body = reason.value.trim();
+            if (!body) { toast('A reason is required.', 'err'); return 'keep'; }
+            const result = await api('/chatmod/mute', {
+              method: 'POST',
+              body: { discordId: member.discordId, name: member.displayName, reason: body, duration: dur.value },
+            });
+            toast(`${member.displayName} muted for ${DURATIONS.find(([v]) => v === dur.value)[1].toLowerCase()}.`, 'ok');
+            if (result.cappedTo28Days) toast('Shortened to 28 days, which is Discord’s limit.', '');
+            chatmodView(view);
+          },
+        },
+      ],
+      onOpen: () => reason.focus(),
+    });
+  }
+
+  // ---------------- active mutes ----------------
+  function activeCard() {
+    const body = el('div', { class: 'card-body tight' });
+    if (!data.active.length) {
+      body.append(el('div', { class: 'empty' },
+        el('div', { class: 'big' }, '♪'),
+        el('div', {}, 'Nobody is muted right now.')));
+    } else {
+      body.append(muteTable(data.active, true));
+    }
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-head' },
+        el('h3', {}, `Currently muted — ${data.active.length}`),
+        el('div', { class: 'spacer' }),
+        el('span', { class: 'muted', style: { fontSize: '12px' } }, 'Discord lifts these automatically when they expire')),
+      body);
+  }
+
+  function historyCard() {
+    const body = el('div', { class: 'card-body tight', style: { maxHeight: '380px', overflowY: 'auto' } });
+    if (!data.history.length) {
+      body.append(el('div', { class: 'empty' }, el('div', {}, 'No mutes have been issued yet.')));
+    } else {
+      body.append(muteTable(data.history, false));
+    }
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-head' }, el('h3', {}, 'Mute history')), body);
+  }
+
+  function muteTable(rows, showLift) {
+    const t = el('table');
+    t.append(el('thead', {}, el('tr', {},
+      el('th', {}, 'Person'), el('th', {}, 'Reason'), el('th', {}, 'Muted by'),
+      el('th', {}, 'When'), el('th', {}, showLift ? 'Ends' : 'Status'), el('th', {}, ''))));
+    const tb = el('tbody');
+    for (const m of rows) {
+      const canLift = can('chatmod.unmute') && m.active &&
+        (m.issuedById === state.me.id || (m.issuedByRole && state.me.rank > rankOfRole(m.issuedByRole)));
+      tb.append(el('tr', {},
+        el('td', {},
+          el('div', {}, el('b', {}, m.name || '—')),
+          el('div', { class: 'mono muted', style: { fontSize: '11px' } }, m.discordId)),
+        el('td', { style: { maxWidth: '260px' } }, m.reason),
+        el('td', {},
+          el('div', {}, m.issuedBy || '—'),
+          m.issuedByRoleName
+            ? el('div', {}, roleBadge(m.issuedByRole, m.issuedByRoleName, m.issuedByRoleColor))
+            : null),
+        el('td', { class: 'muted nowrap' }, timeAgo(m.issuedAt)),
+        el('td', { class: 'nowrap' }, m.active
+          ? (m.expiresAt
+              ? el('span', { class: 'pill warnp' }, `${duration(m.expiresAt - Date.now())} left`)
+              : el('span', { class: 'pill warnp' }, 'active'))
+          : m.revokedBy
+            ? el('span', { class: 'pill mute' }, `lifted by ${m.revokedBy}`)
+            : el('span', { class: 'pill mute' }, 'expired')),
+        el('td', { class: 'right' },
+          canLift ? el('button', { class: 'btn sm', onclick: () => lift(m) }, 'Lift') : null)));
+    }
+    t.append(tb);
+    return t;
+  }
+
+  function rankOfRole(key) {
+    return state.meta?.roles?.find((r) => r.key === key)?.rank ?? 0;
+  }
+
+  async function lift(m) {
+    const ok = await confirmDialog('Lift the mute',
+      `${m.name || m.discordId} will be able to talk in Discord again immediately.`, 'Lift it');
+    if (!ok) return;
+    try {
+      await api(`/chatmod/unmute/${m.id}`, { method: 'POST', body: { reason: 'Lifted from the chat moderation page' } });
+      toast('Mute lifted.', 'ok');
+      chatmodView(view);
+    } catch (err) { toast(errMessage(err), 'err'); }
+  }
+
+  function anonymityNote() {
+    return el('div', { class: 'card' },
+      el('div', { class: 'card-body' },
+        el('div', { style: { fontSize: '13px', marginBottom: '10px' } }, el('b', {}, 'How anonymity works here')),
+        el('ul', { class: 'muted', style: { fontSize: '12.5px', margin: 0, paddingLeft: '18px', lineHeight: '1.9' } },
+          el('li', {}, 'Discord records the ', el('b', {}, 'bot'), ' as the account that applied the timeout. Nobody in the server can see a staff name.'),
+          el('li', {}, 'The audit-log reason Discord stores is a fixed string, so it carries nothing about who ordered it.'),
+          el('li', {}, 'Your name is kept ', el('b', {}, 'here'), ', on this page and in the audit log, so the team stays accountable to each other.'),
+          el('li', {}, 'Mutes last at most 28 days, which is Discord’s own limit, and Discord lifts them on time without the panel doing anything.'),
+          el('li', {}, 'You can only lift a mute issued by a rank below yours, or one you issued yourself.'))));
+  }
+
+  function kv(k, v) {
+    return el('div', {}, el('div', { class: 'k' }, k), el('div', { class: 'v', style: { fontSize: '14px' } }, v));
+  }
+  function stat(label, value, detail, kind) {
+    return el('div', { class: `stat ${kind || ''}` },
+      el('div', { class: 'k' }, label), el('div', { class: 'v' }, value), el('div', { class: 'd' }, detail));
+  }
+
+  render();
+
+  const offMute = on('chat_mute', async () => {
+    try { data = await api('/chatmod'); render(); } catch { /* keep showing what we have */ }
+  });
+  const offUnmute = on('chat_unmute', async () => {
+    try { data = await api('/chatmod'); render(); } catch { /* ignore */ }
+  });
+  return () => { offMute(); offUnmute(); };
+}
