@@ -52,12 +52,22 @@ export async function chatmodView(view) {
         kv('Status', el('span', { class: 'pill ok' }, 'connected'))));
     } else {
       body.append(
-        el('div', { class: 'alert', style: { marginBottom: '12px' } },
+        el('div', { class: 'alert', style: { marginBottom: '14px' } },
           el('b', {}, 'The bot is not usable yet. '), b.error || 'Unknown problem.'),
-        el('div', { class: 'muted', style: { fontSize: '12.5px' } },
-          'Muting needs a Discord bot token on the server. Add ', el('span', { class: 'mono' }, 'DISCORD_BOT_TOKEN'),
-          ' to the environment, invite the bot to your server, and give it the ',
-          el('b', {}, 'Moderate Members'), ' permission. Its role also has to sit above anyone you want to mute.'));
+        el('ol', { class: 'muted', style: { fontSize: '12.5px', margin: '0 0 14px', paddingLeft: '18px', lineHeight: '1.9' } },
+          el('li', {}, 'Developer Portal → your app → ', el('b', {}, 'Bot'), ' → Reset Token, and copy it.'),
+          el('li', {}, 'Put it in ', el('span', { class: 'mono' }, 'DISCORD_BOT_TOKEN'), ' on the server, then restart.'),
+          el('li', {}, 'Invite the bot with the link below. It asks for ', el('b', {}, 'Moderate Members'), ' and nothing else.'),
+          el('li', {}, 'In Server Settings → Roles, drag the bot’s role ', el('b', {}, 'above'),
+            ' everyone it should be able to mute. Discord will not let it touch anyone at or above its own role.')),
+        data.inviteUrl
+          ? el('div', {},
+              el('a', { class: 'btn primary sm', href: data.inviteUrl, target: '_blank', rel: 'noopener' },
+                'Invite the bot (Moderate Members only)'),
+              el('div', { class: 'code-block', style: { marginTop: '10px', fontSize: '11px', whiteSpace: 'pre-wrap' } },
+                data.inviteUrl))
+          : el('div', { class: 'muted', style: { fontSize: '12px' } },
+              'Set DISCORD_CLIENT_ID to generate an invite link.'));
     }
 
     return el('div', { class: 'card' },
@@ -257,7 +267,9 @@ export async function chatmodView(view) {
           el('li', {}, 'The audit-log reason Discord stores is a fixed string, so it carries nothing about who ordered it.'),
           el('li', {}, 'Your name is kept ', el('b', {}, 'here'), ', on this page and in the audit log, so the team stays accountable to each other.'),
           el('li', {}, 'Mutes last at most 28 days, which is Discord’s own limit, and Discord lifts them on time without the panel doing anything.'),
-          el('li', {}, 'You can only lift a mute issued by a rank below yours, or one you issued yourself.'))));
+          el('li', {}, 'You can only lift a mute issued by a rank below yours, or one you issued yourself.'),
+          el('li', {}, 'The bot has no slash commands and never connects to Discord’s gateway, so nothing inside Discord can tell it to act. This website is its only caller.'),
+          el('li', {}, 'Its code is locked to timeouts: reads to find someone, and one write that may only set a timeout. Banning, kicking, posting and role changes are refused before the request is sent.'))));
   }
 
   function kv(k, v) {

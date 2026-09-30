@@ -23,7 +23,7 @@ import { createKey, listKeys, revokeKey } from '../apikeys.js';
 import { auditConfiguration } from '../security.js';
 import {
   botConfigured, botProblem, botSelfCheck, getMember, searchMembers, shapeMember,
-  muteMember, unmuteMember, explainDiscordError, MAX_TIMEOUT_MS,
+  muteMember, unmuteMember, explainDiscordError, MAX_TIMEOUT_MS, botInviteUrl,
 } from '../discordbot.js';
 
 export const apiRouter = express.Router();
@@ -780,6 +780,7 @@ apiRouter.get('/chatmod', requirePerm('chatmod.view'), async (req, res) => {
 
   res.json({
     bot: botConfigured() ? await botSelfCheck() : { ok: false, error: botProblem() },
+    inviteUrl: botInviteUrl(),
     maxDurationMs: MAX_TIMEOUT_MS,
     active: active.map(shapeMute),
     history: recent.map(shapeMute),

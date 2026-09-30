@@ -604,6 +604,41 @@ console.log('\nAppeal-only access');
   db.prepare('DELETE FROM players WHERE roblox_id = 992001').run();
 }
 
+// --- 17. the bot can only mute --------------------------------------------
+console.log('\nBot capability lock');
+{
+  const { assertAllowed, botInviteUrl, MODERATE_MEMBERS } = await import('../src/discordbot.js');
+  const G = '123456789012345678';
+  const U = '234567890123456789';
+  const refuses = (m, p, b) => {
+    try { assertAllowed(m, p, b); return false; } catch { return true; }
+  };
+  const allows = (m, p, b) => !refuses(m, p, b);
+
+  check('reading a member is allowed', allows('GET', `/guilds/${G}/members/${U}`));
+  check('searching members is allowed', allows('GET', `/guilds/${G}/members/search?query=x&limit=10`));
+  check('applying a timeout is allowed',
+    allows('PATCH', `/guilds/${G}/members/${U}`, { communication_disabled_until: null }));
+
+  check('banning is refused', refuses('PUT', `/guilds/${G}/bans/${U}`));
+  check('kicking is refused', refuses('DELETE', `/guilds/${G}/members/${U}`));
+  check('sending a message is refused', refuses('POST', `/channels/${G}/messages`));
+  check('deleting a message is refused', refuses('DELETE', `/channels/${G}/messages/${U}`));
+  check('changing roles is refused', refuses('PUT', `/guilds/${G}/members/${U}/roles/${U}`));
+  check('editing the guild is refused', refuses('PATCH', `/guilds/${G}`));
+
+  // A timeout write must not be able to smuggle other fields along with it.
+  check('a write carrying extra fields is refused',
+    refuses('PATCH', `/guilds/${G}/members/${U}`, { communication_disabled_until: null, roles: ['x'] }));
+  check('a write that only changes a nickname is refused',
+    refuses('PATCH', `/guilds/${G}/members/${U}`, { nick: 'renamed' }));
+
+  check('the invite grants only Moderate Members',
+    (botInviteUrl() || '').includes(`permissions=${MODERATE_MEMBERS}`));
+  check('the invite requests no privileged scopes',
+    !(botInviteUrl() || '').includes('applications.commands'));
+}
+
 // --- cleanup --------------------------------------------------------------
 db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
 db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();

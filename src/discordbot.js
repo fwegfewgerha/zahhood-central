@@ -28,7 +28,46 @@ export function botProblem() {
   return null;
 }
 
+/**
+ * Capability lock.
+ *
+ * The bot exists to do exactly one thing: time people out in one server. It
+ * has no slash commands and never opens a gateway connection, so nothing
+ * inside Discord can tell it to act - the website is the only caller.
+ *
+ * This allowlist is the second half of that promise. Every request is matched
+ * against it before it leaves, so a later change cannot quietly teach the bot
+ * to ban, kick, delete messages or post anything. Anything unlisted throws.
+ */
+const ALLOWED = [
+  // identity and health only
+  { method: 'GET', re: /^\/users\/@me$/ },
+  { method: 'GET', re: /^\/guilds\/\d+$/ },
+  // reading members so a moderator can find the right person
+  { method: 'GET', re: /^\/guilds\/\d+\/members\/\d+$/ },
+  { method: 'GET', re: /^\/guilds\/\d+\/members\/search\?/ },
+  // the one write it is allowed: a timeout, applied or cleared
+  { method: 'PATCH', re: /^\/guilds\/\d+\/members\/\d+$/, bodyKeys: ['communication_disabled_until'] },
+];
+
+export function assertAllowed(method, path, body) {
+  const rule = ALLOWED.find((r) => r.method === method && r.re.test(path));
+  if (!rule) {
+    throw new Error(`discordbot: refusing ${method} ${path.split('?')[0]} - outside this bot's allowed capabilities`);
+  }
+  // A write may only ever touch the timeout field.
+  if (rule.bodyKeys) {
+    const keys = Object.keys(body || {});
+    const extra = keys.filter((k) => !rule.bodyKeys.includes(k));
+    if (extra.length) {
+      throw new Error(`discordbot: refusing to send fields [${extra.join(', ')}] - only a timeout may be written`);
+    }
+  }
+}
+
 async function bot(path, { method = 'GET', body, audit = false } = {}) {
+  assertAllowed(method, path, body);
+
   const headers = {
     Authorization: `Bot ${config.discord.botToken}`,
     'Content-Type': 'application/json',
@@ -137,6 +176,23 @@ export async function unmuteMember(discordId) {
 }
 
 /** Confirms the token works and the bot is actually in the guild. */
+/**
+ * Invite URL granting ONLY "Moderate Members" (1 << 40). No message access,
+ * no ban or kick, no channel management. If the bot is ever compromised, the
+ * worst it can do is time somebody out.
+ */
+export const MODERATE_MEMBERS = '1099511627776';
+
+export function botInviteUrl() {
+  if (!config.discord.clientId) return null;
+  const params = new URLSearchParams({
+    client_id: config.discord.clientId,
+    permissions: MODERATE_MEMBERS,
+    scope: 'bot',
+  });
+  return `https://discord.com/oauth2/authorize?${params}`;
+}
+
 export async function botSelfCheck() {
   if (!botConfigured()) return { ok: false, error: botProblem() };
   try {
