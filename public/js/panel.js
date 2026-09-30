@@ -8,6 +8,7 @@ import { dashboardView } from './views-game.js';
 import { playersView, playerView, punishmentsView, serversView, serverView } from './views-db.js';
 import { chatView, staffView, keysView, auditView, appealsView } from './views-team.js';
 import { accessView } from './views-access.js';
+import { permissionsView } from './views-perms.js';
 
 const ROUTES = {
   '': { title: 'Dashboard', render: dashboardView },
@@ -21,6 +22,7 @@ const ROUTES = {
   'staff': { title: 'Staff Team', render: staffView },
   'keys': { title: 'Game Connection', render: keysView },
   'access': { title: 'Access & Security', render: accessView },
+  'permissions': { title: 'Rank Permissions', render: permissionsView },
   'audit': { title: 'Audit Log', render: auditView },
 };
 
@@ -52,6 +54,7 @@ const NAV = [
     items: [
       { href: '#/keys', ico: '⚯', text: 'Game Connection', perm: 'apikeys.view' },
       { href: '#/access', ico: '⚿', text: 'Access & Security', perm: 'whitelist.view' },
+      { href: '#/permissions', ico: '☑', text: 'Rank Permissions', perm: 'roles.permissions' },
       { href: '#/audit', ico: '≡', text: 'Audit Log', perm: 'audit.view' },
     ],
   },

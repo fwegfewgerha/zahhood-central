@@ -5,6 +5,7 @@ import { publicUser, requireLogin, requireStaff, requirePerm, avatarUrl, clientI
 import {
   can, rankOf, role as roleInfo, publicRoleList, assignableRoles, outranks, isStaff,
   setRoleAppearance, resetRoleAppearance,
+  permissionMatrix, setRolePermission, resetRolePermissions,
 } from '../roles.js';
 import { broadcast, onlineStaff } from '../realtime.js';
 import { liveSnapshot, history, reapDeadServers } from '../stats.js';
@@ -837,6 +838,41 @@ apiRouter.delete('/roles/:key', requirePerm('roles.rename'), (req, res) => {
   audit(req.user, 'roles.reset', `role:${req.params.key}`, null, clientIp(req));
   broadcast({ type: 'roles_changed', roles: publicRoleList() }, 0);
   res.json({ ok: true, role: result.role, roles: publicRoleList() });
+});
+
+// ---------------------------------------------------------------
+// permission matrix - Game Owner only
+// ---------------------------------------------------------------
+apiRouter.get('/permissions', requirePerm('roles.permissions'), (req, res) => {
+  res.json(permissionMatrix());
+});
+
+apiRouter.post('/permissions', requirePerm('roles.permissions'), (req, res) => {
+  const roleKey = text(req.body?.role, 30);
+  const permission = text(req.body?.permission, 40);
+  const allowed = req.body?.allowed === true || req.body?.allowed === '1';
+
+  const result = setRolePermission(roleKey, permission, allowed, req.user);
+  if (result.error) return res.status(400).json(result);
+
+  audit(
+    req.user,
+    'roles.permission_set',
+    `${roleKey}:${permission}`,
+    allowed ? 'granted' : 'revoked',
+    clientIp(req)
+  );
+  // Anyone holding this rank needs their client to notice straight away.
+  broadcast({ type: 'permissions_changed', role: roleKey }, 0);
+  res.json({ ok: true, matrix: permissionMatrix() });
+});
+
+apiRouter.delete('/permissions', requirePerm('roles.permissions'), (req, res) => {
+  const roleKey = text(req.query?.role, 30) || null;
+  resetRolePermissions(roleKey);
+  audit(req.user, 'roles.permissions_reset', roleKey || 'all ranks', null, clientIp(req));
+  broadcast({ type: 'permissions_changed', role: roleKey }, 0);
+  res.json({ ok: true, matrix: permissionMatrix() });
 });
 
 // ---------------------------------------------------------------

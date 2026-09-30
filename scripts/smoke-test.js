@@ -368,6 +368,79 @@ console.log('\nRequest hardening');
   check('an unsigned session id is rejected', unsigned.status === 401);
 }
 
+// --- 13. permission editor --------------------------------------------------
+console.log('\nPermission editor');
+{
+  await panel('/permissions', null, 'DELETE'); // start from defaults
+
+  const matrix = await panel('/permissions');
+  check('the matrix loads', matrix.status === 200 && matrix.data.permissions.length > 20);
+  check('every rank has a column', matrix.data.roles.length === 14);
+
+  const banPerm = matrix.data.permissions.find((p) => p.key === 'punish.ban.perm');
+  check('chat mod cannot permanently ban by default', banPerm.grants.chat_mod.allowed === false);
+
+  // Grant it, then prove it actually takes effect on a real request.
+  const grant = await panel('/permissions', { role: 'chat_mod', permission: 'punish.ban.perm', allowed: true }, 'POST');
+  check('a permission can be granted to a rank', grant.status === 200);
+  check('the matrix marks it as changed from default',
+    grant.data.matrix.permissions.find((p) => p.key === 'punish.ban.perm').grants.chat_mod.overridden === true);
+
+  const chatMod = db.prepare("SELECT * FROM users WHERE role = 'chat_mod' LIMIT 1").get();
+  if (chatMod) {
+    const lowSid = crypto.randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO sessions (id, user_id, created_at, expires_at, last_used_at, ip, user_agent) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(lowSid, chatMod.id, Date.now(), Date.now() + 3600_000, Date.now(), 'smoke-test');
+    const lowCookie = `zhc_sid=${lowSid}.${crypto.createHmac('sha256', config.sessionSecret).update(lowSid).digest('base64url')}`;
+    const asLow = (path, body, method = 'GET') =>
+      fetch(`${BASE}/api${path}`, {
+        method,
+        headers: { 'Content-Type': 'application/json', Cookie: lowCookie, Origin: BASE },
+        body: body ? JSON.stringify(body) : undefined,
+      }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }));
+
+    const ban = await asLow(`/players/${BYSTANDER.userId}/punish`, { type: 'ban', reason: 'perm grant test' }, 'POST');
+    check('the granted rank can now actually do it', ban.status === 200);
+    if (ban.status === 200) {
+      await panel(`/punishments/${ban.data.punishment.id}/revoke`, { reason: 'test cleanup' }, 'POST');
+    }
+
+    // Revoke something they normally have, and prove it is taken away.
+    await panel('/permissions', { role: 'chat_mod', permission: 'punish.warn', allowed: false }, 'POST');
+    const warn = await asLow(`/players/${BYSTANDER.userId}/punish`, { type: 'warn', reason: 'should fail' }, 'POST');
+    check('a revoked permission is actually denied', warn.status === 403);
+
+    // Rank rules survive a permission grant.
+    await panel('/permissions', { role: 'chat_mod', permission: 'staff.manage', allowed: true }, 'POST');
+    const promote = await asLow(`/staff/${owner.id}/role`, { role: 'moderator' }, 'POST');
+    check('promote rights still cannot reach a higher rank', promote.status === 403);
+    const grantOwner = await asLow(`/staff/${chatMod.id}/role`, { role: 'game_owner' }, 'POST');
+    check('promote rights still cannot grant game_owner', grantOwner.status === 403);
+
+    const editPerms = await asLow('/permissions', { role: 'chat_mod', permission: 'db.purge', allowed: true }, 'POST');
+    check('a granted rank still cannot open the permission editor', editPerms.status === 403);
+  }
+
+  const locked = await panel('/permissions', { role: 'chat_mod', permission: 'roles.permissions', allowed: true }, 'POST');
+  check('the locked meta permission cannot be granted',
+    locked.status === 400 && locked.data.error === 'permission_locked');
+
+  const lockedRename = await panel('/permissions', { role: 'co_owner', permission: 'roles.rename', allowed: true }, 'POST');
+  check('rank renaming cannot be handed out either', lockedRename.status === 400);
+
+  const badPerm = await panel('/permissions', { role: 'chat_mod', permission: 'not.a.permission', allowed: true }, 'POST');
+  check('an unknown permission is rejected', badPerm.status === 400);
+
+  const badRoleKey = await panel('/permissions', { role: 'nope', permission: 'db.view', allowed: true }, 'POST');
+  check('an unknown rank is rejected', badRoleKey.status === 400);
+
+  const reset = await panel('/permissions', null, 'DELETE');
+  check('everything can be reset to defaults', reset.status === 200);
+  const after = reset.data.matrix.permissions.find((p) => p.key === 'punish.ban.perm');
+  check('defaults really are restored', after.grants.chat_mod.allowed === false);
+}
+
 // --- cleanup --------------------------------------------------------------
 db.prepare('DELETE FROM sessions WHERE ip = ?').run('smoke-test');
 db.prepare("DELETE FROM login_attempts WHERE ip = 'smoke-test'").run();

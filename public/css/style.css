@@ -455,3 +455,29 @@ label.field > span { display: block; font-size: 11.5px; color: var(--text-dim); 
   .chat-rooms, .chat-side { display: none; }
   .feature-grid { grid-template-columns: 1fr; }
 }
+
+/* ============================ permission editor ============================ */
+.perm-toggle {
+  width: 34px; height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: var(--bg-2);
+  color: var(--text-faint);
+  font-size: 13px; font-weight: 700;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.perm-toggle:hover:not(:disabled) { border-color: var(--accent); }
+.perm-toggle[data-on="1"] {
+  background: rgba(61, 220, 132, .16);
+  border-color: rgba(61, 220, 132, .45);
+  color: var(--good);
+}
+.perm-toggle[data-on="0"] {
+  background: rgba(255, 255, 255, .03);
+  color: var(--text-faint);
+}
+.perm-toggle[data-overridden="1"] {
+  box-shadow: 0 0 0 2px rgba(255, 163, 46, .35);
+}
+.perm-toggle:disabled { opacity: .4; cursor: not-allowed; }

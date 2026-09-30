@@ -24,6 +24,7 @@ a ban issued on the website lands on a live server within one heartbeat.
 | Whitelist: only approved Discord IDs may sign in | Access & Security |
 | Rejected sign-ins, active sessions, posture checks | Access & Security |
 | Owner-editable rank names and colours | Staff Team |
+| Owner-editable permission matrix, per rank | Rank Permissions |
 
 ---
 
@@ -68,8 +69,9 @@ npm start                    # terminal 1
 node scripts/smoke-test.js   # terminal 2
 ```
 
-63 assertions covering auth, the heartbeat, the ban pipeline, rank enforcement, the
-whitelist, role renaming, the Game Owner lock, CSRF and session forgery.
+79 assertions covering auth, the heartbeat, the ban pipeline, rank enforcement, the
+whitelist, role renaming, the permission editor, the Game Owner lock, CSRF and session
+forgery.
 
 ---
 
@@ -152,6 +154,20 @@ The Game Owner can rename and recolour any rank from **Staff Team → The ladder
 Renaming is cosmetic by design: `key`, `rank` and `staff` are structural and are
 never editable, so a rename can never reshuffle who outranks whom. "Reset to
 default" puts the shipped name back.
+
+### Editing what each rank can do
+
+**Rank Permissions** (Game Owner only) is a grid: one row per permission, one column per
+rank, one toggle per cell. Switch anything on or off for any rank. An amber ring marks a
+cell you have changed from the shipped default, and the header counts how many changes are
+live. Sensitive permissions are flagged, and granting one to a junior rank asks first.
+
+Two rows are deliberately locked and cannot be handed out: **Rename ranks** and **Edit this
+permission table**. A rank able to rewrite the permission table could grant itself
+everything else, so both stay pinned to the Game Owner.
+
+Toggling a permission does not loosen the rank rules. They are enforced separately and
+always apply:
 
 Guardrails that are enforced server-side, not just hidden in the UI:
 

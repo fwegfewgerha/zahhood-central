@@ -144,20 +144,162 @@ export const PERMISSIONS = {
   'whitelist.manage':  80,  // add / remove people from the whitelist
   'security.view':     70,  // rejected logins, active sessions
   'roles.rename':     100,  // Game Owner only: rename and recolour the ladder
+  'roles.permissions':100,  // Game Owner only: edit this very table
 };
 
+/**
+ * These can never be handed to a lower rank, and the permission editor
+ * refuses to touch them. Both are "meta" powers: anything able to rewrite
+ * the permission table could grant itself everything else, so they stay
+ * pinned to the Game Owner no matter what the override table says.
+ */
+export const LOCKED_PERMISSIONS = new Set(['roles.permissions', 'roles.rename']);
+
+/** Labels and descriptions for the permission editor. */
+export const PERMISSION_META = {
+  'panel.access':      { category: 'Access', label: 'Open the staff panel', desc: 'Without this the account only ever sees the landing page.' },
+  'stats.view':        { category: 'Access', label: 'See the live dashboard', desc: 'Player counts, servers, graphs and the activity feed.' },
+  'servers.view':      { category: 'Access', label: 'Browse live servers', desc: 'The server list and the who-is-in-this-server lookup.' },
+  'staff.view':        { category: 'Access', label: 'See the staff team', desc: 'Who is on the team and what rank they hold.' },
+
+  'db.view':           { category: 'Player database', label: 'Search the database', desc: 'Look up any player, their stats and their history.' },
+  'db.note':           { category: 'Player database', label: 'Leave staff notes', desc: 'Write notes on a player for the rest of the team.' },
+  'db.purge':          { category: 'Player database', label: 'Purge player data', desc: 'Permanently delete records.', danger: true },
+
+  'punish.warn':       { category: 'Moderation', label: 'Issue warnings' },
+  'punish.mute':       { category: 'Moderation', label: 'Mute players', desc: 'Blocks them from in-game chat.' },
+  'punish.kick':       { category: 'Moderation', label: 'Kick players', desc: 'Boots them out of the server they are in.' },
+  'punish.ban.temp':   { category: 'Moderation', label: 'Issue temporary bans', desc: 'Bans that carry an expiry date.' },
+  'punish.ban.perm':   { category: 'Moderation', label: 'Issue permanent bans', desc: 'Bans that never expire.', danger: true },
+  'punish.revoke':     { category: 'Moderation', label: 'Lift punishments', desc: 'Still only ones issued by a rank below their own.' },
+  'punish.viewAll':    { category: 'Moderation', label: 'See all casework', desc: 'Without this they only see punishments they issued themselves.' },
+  'appeals.review':    { category: 'Moderation', label: 'Rule on ban appeals', desc: 'Accept or deny appeals from banned players.' },
+
+  'chat.read':         { category: 'Staff chat', label: 'Read staff chat', desc: 'Individual rooms are still gated by rank on top of this.' },
+  'chat.write':        { category: 'Staff chat', label: 'Post in staff chat' },
+  'chat.delete':       { category: 'Staff chat', label: 'Delete messages', desc: 'Still only messages from ranks below their own.' },
+
+  'servers.shutdown':  { category: 'Servers', label: 'Shut down a server', desc: 'Disconnects everyone inside it.', danger: true },
+
+  'staff.manage':      { category: 'Team', label: 'Promote and demote', desc: 'Always limited to ranks strictly below their own.', danger: true },
+  'staff.remove':      { category: 'Team', label: 'Suspend staff accounts', desc: 'Also allows signing someone out of every device.', danger: true },
+
+  'whitelist.view':    { category: 'Administration', label: 'See the whitelist' },
+  'whitelist.manage':  { category: 'Administration', label: 'Edit the whitelist', desc: 'Decide who may sign in to this site at all.', danger: true },
+  'security.view':     { category: 'Administration', label: 'See security activity', desc: 'Rejected sign-ins and active sessions.' },
+  'audit.view':        { category: 'Administration', label: 'Read the audit log', desc: 'Every staff action ever taken.' },
+  'apikeys.view':      { category: 'Administration', label: 'See game API keys' },
+  'apikeys.manage':    { category: 'Administration', label: 'Create and revoke keys', desc: 'A key lets a Roblox server read and write your database.', danger: true },
+  'settings.manage':   { category: 'Administration', label: 'Change site settings', desc: 'Includes turning the whitelist on and off.', danger: true },
+
+  'roles.rename':      { category: 'Owner only', label: 'Rename ranks', desc: 'Pinned to the Game Owner and not editable.' },
+  'roles.permissions': { category: 'Owner only', label: 'Edit this permission table', desc: 'Pinned to the Game Owner and not editable - anything able to rewrite permissions could grant itself everything else.' },
+};
+
+export const PERMISSION_CATEGORIES = [
+  'Access', 'Player database', 'Moderation', 'Staff chat', 'Servers', 'Team', 'Administration', 'Owner only',
+];
+
+// ---------------------------------------------------------------
+// Per-rank permission overrides, set by the Game Owner.
+// A row here beats the default threshold above.
+// ---------------------------------------------------------------
+let permCache = null;
+
+function permOverrides() {
+  if (permCache) return permCache;
+  permCache = {};
+  try {
+    for (const row of db.prepare('SELECT role_key, permission, allowed FROM role_permissions').all()) {
+      (permCache[row.role_key] ||= {})[row.permission] = row.allowed;
+    }
+  } catch {
+    // Table does not exist yet on a first boot.
+  }
+  return permCache;
+}
+
+export function refreshPermissions() {
+  permCache = null;
+}
+
 export function can(roleKey, permission) {
+  const need = PERMISSIONS[permission];
+  if (need === undefined) return false;
+
+  // Meta powers ignore the override table entirely.
+  if (LOCKED_PERMISSIONS.has(permission)) return rankOf(roleKey) >= need;
+
+  const override = permOverrides()[roleKey]?.[permission];
+  if (override !== undefined) return override === 1;
+  return rankOf(roleKey) >= need;
+}
+
+/** True when this permission is on for this rank with no override applied. */
+export function defaultAllows(roleKey, permission) {
   const need = PERMISSIONS[permission];
   if (need === undefined) return false;
   return rankOf(roleKey) >= need;
 }
 
+/** Turn one permission on or off for one rank. */
+export function setRolePermission(roleKey, permission, allowed, actor) {
+  if (!BASE_ROLE_MAP[roleKey]) return { error: 'unknown_role' };
+  if (PERMISSIONS[permission] === undefined) return { error: 'unknown_permission' };
+  if (LOCKED_PERMISSIONS.has(permission)) return { error: 'permission_locked' };
+
+  db.prepare(
+    `INSERT INTO role_permissions (role_key, permission, allowed, updated_by, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(role_key, permission) DO UPDATE SET
+       allowed = excluded.allowed, updated_by = excluded.updated_by, updated_at = excluded.updated_at`
+  ).run(roleKey, permission, allowed ? 1 : 0, actor?.discord_username ?? 'system', Date.now());
+
+  refreshPermissions();
+  return { ok: true };
+}
+
+/** Send a rank, or the whole table, back to the shipped defaults. */
+export function resetRolePermissions(roleKey) {
+  if (roleKey) db.prepare('DELETE FROM role_permissions WHERE role_key = ?').run(roleKey);
+  else db.prepare('DELETE FROM role_permissions').run();
+  refreshPermissions();
+  return { ok: true };
+}
+
+/** The whole grid, shaped for the editor. */
+export function permissionMatrix() {
+  const ov = permOverrides();
+  return {
+    categories: PERMISSION_CATEGORIES,
+    roles: publicRoleList(),
+    permissions: Object.keys(PERMISSIONS).map((key) => {
+      const meta = PERMISSION_META[key] || {};
+      const locked = LOCKED_PERMISSIONS.has(key);
+      return {
+        key,
+        label: meta.label || key,
+        desc: meta.desc || null,
+        category: meta.category || 'Administration',
+        danger: !!meta.danger,
+        locked,
+        defaultRank: PERMISSIONS[key],
+        grants: Object.fromEntries(
+          ROLE_KEYS.map((roleKey) => {
+            const override = ov[roleKey]?.[key];
+            const byDefault = defaultAllows(roleKey, key);
+            const allowed = locked || override === undefined ? byDefault : override === 1;
+            return [roleKey, { allowed, byDefault, overridden: allowed !== byDefault }];
+          })
+        ),
+      };
+    }),
+  };
+}
+
 /** Everything this role may do, as a flat list - handy for the client. */
 export function permissionsFor(roleKey) {
-  const r = rankOf(roleKey);
-  return Object.entries(PERMISSIONS)
-    .filter(([, need]) => r >= need)
-    .map(([key]) => key);
+  return Object.keys(PERMISSIONS).filter((key) => can(roleKey, key));
 }
 
 /** Roles `roleKey` is allowed to hand out (always strictly below itself). */

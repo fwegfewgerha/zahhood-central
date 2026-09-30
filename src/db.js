@@ -262,6 +262,16 @@ CREATE TABLE IF NOT EXISTS role_overrides (
   updated_at INTEGER
 );
 
+-- Owner-set permission grants. A row here beats the default rank threshold.
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_key   TEXT    NOT NULL,
+  permission TEXT    NOT NULL,
+  allowed    INTEGER NOT NULL,
+  updated_by TEXT,
+  updated_at INTEGER,
+  PRIMARY KEY (role_key, permission)
+);
+
 -- Every rejected sign-in, for rate limiting and forensics.
 CREATE TABLE IF NOT EXISTS login_attempts (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
