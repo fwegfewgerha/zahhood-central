@@ -12,10 +12,24 @@ set -e
 : "${DB_PATH:=/data/zahhood.db}"
 mkdir -p "$(dirname "$DB_PATH")"
 
+# A Railway volume is mounted after the image's filesystem permissions have
+# been applied and is root-owned by default. Keep the server unprivileged,
+# but let the entrypoint fix the mount before handing off to node.
+if [ "$(id -u)" -eq 0 ]; then
+  chown -R node:node "$(dirname "$DB_PATH")"
+fi
+
+run_server() {
+  if [ "$(id -u)" -eq 0 ]; then
+    exec su -s /bin/sh node -c "exec node src/server.js"
+  fi
+  exec node src/server.js
+}
+
 if [ -z "${REPLICA_URL:-}" ]; then
   echo "[boot] REPLICA_URL not set - starting without replication."
   echo "[boot] The database is NOT durable on a host with an ephemeral disk."
-  exec node src/server.js
+  run_server
 fi
 
 echo "[boot] replication target: ${REPLICA_URL%%\?*}"
@@ -32,5 +46,12 @@ else
   fi
 fi
 
+if [ "$(id -u)" -eq 0 ] && [ -f "$DB_PATH" ]; then
+  chown node:node "$DB_PATH"
+fi
+
 echo "[boot] starting server under litestream replicate"
+if [ "$(id -u)" -eq 0 ]; then
+  exec litestream replicate -config /app/litestream.yml -exec "su -s /bin/sh node -c 'exec node src/server.js'"
+fi
 exec litestream replicate -config /app/litestream.yml -exec "node src/server.js"
